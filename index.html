@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Loopin · 习惯打卡</title>
+<link rel="stylesheet" href="styles.css" />
+
+<!-- PWA -->
+<link rel="manifest" href="manifest.webmanifest" />
+<meta name="theme-color" content="#ffffff" />
+<meta name="color-scheme" content="light" />
+<link rel="icon" type="image/svg+xml" href="icon.svg" />
+<link rel="apple-touch-icon" href="icon.svg" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="default" />
+<meta name="apple-mobile-web-app-title" content="Loopin" />
+<meta name="mobile-web-app-capable" content="yes" />
+<script>
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('sw.js').catch(() => {});
+    });
+  }
+  window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    window.__deferredInstallPrompt = e;
+  });
+  window.addEventListener('appinstalled', () => {
+    window.__deferredInstallPrompt = null;
+  });
+</script>
+
+<!-- Firebase SDK (sharing CollabSync project) -->
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+  import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult, onAuthStateChanged, signOut } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
+  import { getFirestore, doc, setDoc, getDoc, getDocs, collection, query, where, onSnapshot, addDoc, updateDoc, deleteDoc, arrayUnion, arrayRemove, orderBy } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+
+  const firebaseConfig = {
+    apiKey: "AIzaSyB4CnNo-aQY5pOXLUKndQzsYkHu7FkBp40",
+    authDomain: "collabsync-7a2cd.firebaseapp.com",
+    projectId: "collabsync-7a2cd",
+    storageBucket: "collabsync-7a2cd.firebasestorage.app",
+    messagingSenderId: "997421706890",
+    appId: "1:997421706890:web:6e06e4eff833f29ff00773"
+  };
+
+  const app = initializeApp(firebaseConfig);
+  const auth = getAuth(app);
+  const db = getFirestore(app);
+  const googleProvider = new GoogleAuthProvider();
+
+  window.fb = {
+    auth, db, googleProvider,
+    signInWithPopup, signInWithRedirect, getRedirectResult, onAuthStateChanged, signOut,
+    doc, setDoc, getDoc, getDocs, collection, query, where, onSnapshot,
+    addDoc, updateDoc, deleteDoc, arrayUnion, arrayRemove, orderBy
+  };
+  window.dispatchEvent(new Event('fb-ready'));
+</script>
+</head>
+<body>
+
+<script>
+  // Pre-paint: if the user was signed in last time, hide the login overlay until
+  // Firebase confirms auth state — avoids a flash of the login screen on refresh.
+  if (localStorage.getItem('loopin_signed_in') === '1') {
+    document.documentElement.classList.add('auth-pending');
+  }
+</script>
+
+<!-- Login overlay (shown when unauthenticated) -->
+<div id="loginOverlay" class="login-overlay">
+  <div class="login-card">
+    <div class="brand">
+      <span class="logo-dot"></span>
+      <h1>Loopin</h1>
+    </div>
+    <p class="login-desc">习惯打卡 · 多人协作</p>
+    <button id="googleSignInBtn" class="primary full">使用 Google 登录</button>
+  </div>
+</div>
+
+<!-- Group picker overlay (shown when logged in but no groups / before pick) -->
+<div id="groupPickerOverlay" class="login-overlay hidden">
+  <div class="login-card wide">
+    <h2>选择打卡组</h2>
+    <p class="login-desc">每个组有独立的成员、习惯库和周计划。</p>
+    <div id="groupPickerWho" class="group-picker-who"></div>
+    <div id="groupPickerList" class="group-picker-list"></div>
+    <button id="createGroupBtn" class="primary full">+ 新建打卡组</button>
+    <button id="groupPickerSignOut" class="ghost full-link">用其他账号登录</button>
+  </div>
+</div>
+
+<header class="topbar hidden" id="topbar">
+  <div class="brand">
+    <button id="sidebarToggle" class="icon-btn mobile-only" aria-label="侧边栏">☰</button>
+    <span class="logo-dot"></span>
+    <h1>Loopin</h1>
+    <button id="groupSwitchBtn" class="group-switch" title="切换打卡组">
+      <span id="currentGroupName">—</span>
+      <span class="caret">▾</span>
+    </button>
+  </div>
+  <div class="topbar-right">
+    <div class="view-switch">
+      <button id="viewWeekBtn" class="seg-btn active">周</button>
+      <button id="viewMonthBtn" class="seg-btn">月</button>
+    </div>
+    <div class="week-nav" id="weekNav">
+      <button id="prevWeek" class="ghost">‹</button>
+      <button id="thisWeek" class="ghost">本周</button>
+      <button id="nextWeek" class="ghost">›</button>
+      <span id="weekLabel" class="week-label"></span>
+    </div>
+    <div class="week-nav hidden" id="monthNav">
+      <button id="prevMonth" class="ghost">‹</button>
+      <button id="thisMonth" class="ghost">本月</button>
+      <button id="nextMonth" class="ghost">›</button>
+      <span id="monthLabel" class="week-label"></span>
+    </div>
+    <button id="inviteBtn" class="ghost">邀请</button>
+    <button id="toggleDrawer" class="ghost drawer-btn">习惯库</button>
+  </div>
+</header>
+
+<!-- Mobile action bar: shown only on narrow screens. Compact replacement for sidebar's 参与 section + duplicates of topbar actions. -->
+<div class="mobile-actionbar hidden" id="mobileActionbar">
+  <span class="ma-label">参与</span>
+  <div class="ma-people" id="peopleListMobile"></div>
+  <button class="ma-btn invite" id="inviteBtnMobile">+邀请</button>
+  <div class="ma-view-switch">
+    <button class="seg-btn active" id="viewWeekBtnMobile">周</button>
+    <button class="seg-btn" id="viewMonthBtnMobile">月</button>
+  </div>
+  <button class="ma-btn lib" id="toggleDrawerMobile">习惯库</button>
+</div>
+
+<main class="main hidden" id="mainArea">
+  <aside class="sidebar" id="sidebarWeek">
+    <div class="week-strip" id="weekStrip">
+      <span class="ws-label">本周习惯</span>
+      <div class="ws-chips" id="weekStripChips"></div>
+      <button class="ws-toggle" id="weekStripToggle">展开</button>
+    </div>
+
+    <section class="sec">
+      <div class="sec-head">
+        <h2>参与成员</h2>
+        <button class="add-mini" id="addPerson">+ 邀请</button>
+      </div>
+      <div class="people-list" id="peopleList"></div>
+    </section>
+
+    <section class="sec sec-grow" id="weekHabitSec">
+      <div class="sec-head">
+        <h2>本周习惯</h2>
+        <button class="add-mini" id="addWeekHabit">+ 添加</button>
+      </div>
+      <div class="hint-sm">拖动卡片至右侧完成打卡</div>
+      <div class="habit-cards" id="habitCards"></div>
+    </section>
+
+    <div class="me-bar" id="meBar">
+      <div class="me-avatar" id="meAvatar"></div>
+      <div class="me-info">
+        <div class="me-name" id="meName"></div>
+        <div class="me-email" id="meEmail"></div>
+      </div>
+      <button class="ghost me-menu-btn" id="meMenuBtn" title="账户">⋯</button>
+    </div>
+  </aside>
+
+  <aside class="sidebar hidden" id="sidebarMonth">
+    <section class="sec sec-grow">
+      <div class="sec-head">
+        <h2>习惯库</h2>
+        <button class="add-mini" id="addLibraryFromMonth">+ 新建</button>
+      </div>
+      <div class="hint-sm">拖到右侧某一周即可加入该周的计划</div>
+      <div class="habit-cards" id="libraryListMonth"></div>
+    </section>
+  </aside>
+
+  <section class="calendar-wrap" id="weekArea">
+    <div class="calendar" id="calendar"></div>
+    <button class="add-divider-btn" id="dividerBtn">+ 分割线</button>
+  </section>
+
+  <section class="calendar-wrap hidden" id="monthArea">
+    <div class="month-grid" id="monthGrid"></div>
+  </section>
+</main>
+
+<aside class="drawer" id="drawer" aria-hidden="true">
+  <div class="drawer-head">
+    <h2>习惯库</h2>
+    <button class="ghost" id="closeDrawer">×</button>
+  </div>
+  <p class="drawer-desc">复用习惯的总仓库。在这里删除不会影响已加入到每周的习惯。</p>
+  <div class="drawer-list" id="libraryList"></div>
+  <button class="primary full" id="addLibrary">+ 新建习惯</button>
+</aside>
+<div class="drawer-mask hidden" id="drawerMask"></div>
+<div class="sidebar-mask hidden" id="sidebarMask"></div>
+
+<div class="modal-backdrop hidden" id="modalBackdrop">
+  <div class="modal" id="modal">
+    <h3 id="modalTitle">编辑</h3>
+    <div id="modalBody"></div>
+    <div class="modal-actions">
+      <button class="ghost" id="modalCancel">取消</button>
+      <button class="primary" id="modalOk">确定</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+
+<script src="emoji.js"></script>
+<script src="auth.js"></script>
+<script src="library.js"></script>
+<script src="groups.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
