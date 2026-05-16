@@ -579,20 +579,26 @@ let currentDragHeight = null;
 let lastDragY = null;
 let dragDir = 'down';
 let dividerDrag = null;
-// Safety net: if the mouse leaves the window (or focus is lost) without firing mouseup —
-// e.g. user drags onto the OS bar or alt-tabs — clear any stuck divider-drag state so the
-// next click is not blocked. The mouseup handler does the real commit when it fires.
-window.addEventListener('blur', () => {
-  if(dividerDrag){
-    try{ hideDividerSnapLine && hideDividerSnapLine(); }catch{}
-    dividerDrag = null;
-  }
+// Safety net: clear stuck divider-drag state on every condition where mouseup might be
+// missed (window blur, mouse leaves the browser window, tab visibility change, ESC key).
+function _clearDividerDragSafety(){
+  // Always clear any leftover .dragging state on the calendar so .divider-line stays
+  // pointer-events:auto. (When .calendar.dragging is on, divider-lines are explicitly
+  // non-interactive — a lingering class is the most likely cause of "can't drag divider
+  // until refresh".)
+  try{ document.getElementById('calendar')?.classList.remove('dragging'); }catch{}
+  try{ document.querySelectorAll('.dragging').forEach(el => el.classList.remove('dragging')); }catch{}
+  if(!dividerDrag) return;
+  try{ if(typeof hideDividerSnapLine === 'function') hideDividerSnapLine(); }catch{}
+  dividerDrag = null;
+}
+window.addEventListener('blur', _clearDividerDragSafety);
+window.addEventListener('mouseleave', _clearDividerDragSafety);
+document.addEventListener('visibilitychange', () => {
+  if(document.hidden) _clearDividerDragSafety();
 });
-window.addEventListener('mouseleave', () => {
-  if(dividerDrag){
-    try{ hideDividerSnapLine && hideDividerSnapLine(); }catch{}
-    dividerDrag = null;
-  }
+window.addEventListener('keydown', (e) => {
+  if(e.key === 'Escape') _clearDividerDragSafety();
 });
 let suppressSourceReveal = false;
 let suppressPlacementAnimation = false;
@@ -1867,10 +1873,45 @@ function computeDividerDayLayout(dayBlocks, prevY, oldY, newY, nextY, mode){
     else stable.push(b);
   });
 
+  // First try: shift the whole affected group uniformly so block-to-block gaps are
+  // preserved. Only fall back to packing if the uniform shift wouldn't fit on the other
+  // end of the segment.
   const idx = prevY == null ? 0 : 1;
   const bounds = movingUp
     ? getSegmentBounds(dividerYs, idx)
     : getSegmentBounds(dividerYs, idx + 1);
+  if(affected.length > 0){
+    let shift = 0;
+    if(movingUp){
+      // Upper segment shrinks (divider rose). If lowest block's bottom now sits past
+      // the new lower boundary, push every affected block up by the same amount.
+      let maxBottom = -Infinity;
+      for(const b of affected){ maxBottom = Math.max(maxBottom, b.y + b.h); }
+      const overflow = maxBottom - bounds.bottom;
+      if(overflow > 0) shift = -overflow;
+    } else {
+      // Lower segment shrinks (divider dropped). If topmost block now sits above the
+      // new top boundary, push every affected block down by the same amount.
+      let minTop = Infinity;
+      for(const b of affected){ minTop = Math.min(minTop, b.y); }
+      const overflow = bounds.top - minTop;
+      if(overflow > 0) shift = overflow;
+    }
+    let shiftFits = true;
+    if(shift !== 0){
+      for(const b of affected){
+        const ny = b.y + shift;
+        if(ny < bounds.top || (ny + b.h) > bounds.bottom){ shiftFits = false; break; }
+      }
+    }
+    if(shiftFits){
+      const out = Object.fromEntries(stable.map(b=>[b.id, b.y]));
+      for(const b of affected){ out[b.id] = b.y + shift; }
+      return out;
+    }
+  }
+
+  // Fallback: blocks really don't fit even after uniform shift, pack tight.
   const affectedPos = movingUp
     ? packBlocksUp(affected, bounds.top, bounds.bottom)
     : packBlocksDown(affected, bounds.top, bounds.bottom);
