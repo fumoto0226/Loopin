@@ -357,7 +357,7 @@ function buildSegmentLayout(blocks, dividerYs){
   return pos;
 }
 
-function resolveOverlapsForBody(body, dayIdx, displayOnly){
+function resolveOverlapsForBody(body, dayIdx){
   const wk = state.weeks[currentWeek]; if(!wk) return false;
   const arr = wk.days[dayIdx] || [];
   const blocks = arr.map(b=>{
@@ -374,25 +374,44 @@ function resolveOverlapsForBody(body, dayIdx, displayOnly){
     if(!el) continue;
     const h = el.offsetHeight;
     const newY = pos[b.id];
-    if(newY !== b.y){
-      if(!displayOnly){ b.y = newY; changed = true; }
-    }
+    if(newY !== b.y){ b.y = newY; changed = true }
     el.style.top = newY + 'px';
     maxBottom = Math.max(maxBottom, newY + h);
   }
   body.style.minHeight = (maxBottom + BODY_PAD) + 'px';
   return changed;
 }
+
+// Render blocks at their saved (frac-derived) positions without any auto-packing.
+// Used on mobile so the visual layout mirrors what's on desktop instead of collapsing
+// to the top when the shorter cell forces packBlocksUp to kick in.
+function renderBlocksRaw(body, dayIdx){
+  const wk = state.weeks[currentWeek]; if(!wk) return;
+  const arr = wk.days[dayIdx] || [];
+  let maxBottom = BODY_PAD;
+  arr.forEach(b => {
+    const el = body.querySelector(`[data-bid="${b.id}"]`);
+    if(!el) return;
+    const y = (typeof b.y === 'number') ? b.y : BODY_PAD;
+    el.style.top = y + 'px';
+    maxBottom = Math.max(maxBottom, y + el.offsetHeight);
+  });
+  body.style.minHeight = (maxBottom + BODY_PAD) + 'px';
+}
+
 function resolveAllOverlaps(){
-  // On mobile the day-cell is much shorter than desktop, so blocks frequently overflow the
-  // segment bounds and `packBlocksUp` packs them tight. We must NOT persist that to Firestore
-  // — otherwise the smaller `frac` values propagate to the desktop client and the blocks
-  // there visibly creep upward over time. Mobile reconciles for display only.
   const isMobile = window.LoopinMobile && window.LoopinMobile.isMobile();
   const bodies = document.querySelectorAll('.calendar .day .body');
+  if(isMobile){
+    // On the short mobile cell, packBlocksUp would collapse everything to the top and we
+    // intentionally render blocks at their saved fractional positions instead. Position is
+    // display-only here; no state mutation, no save() back to Firestore.
+    bodies.forEach((body, i) => renderBlocksRaw(body, i));
+    return;
+  }
   let changed = false;
-  bodies.forEach((body, i) => { if(resolveOverlapsForBody(body, i, isMobile)) changed = true });
-  if(changed && !isMobile) save();
+  bodies.forEach((body, i) => { if(resolveOverlapsForBody(body, i)) changed = true });
+  if(changed) save();
 }
 
 let currentDragPayload = null;
