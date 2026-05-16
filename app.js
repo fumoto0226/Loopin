@@ -75,68 +75,68 @@ let currentWeek = isoWeekKey(new Date());
 function uid(){ return Math.random().toString(36).slice(2,9) }
 let _applyingRemote = false;
 let _applyingRemoteLib = false;
-// Convert a pixel y inside the body to a "segmented" frac — i.e. the position is encoded
-// as (segment_start_frac) + (relFrac_in_segment) * (segment_span_frac). Round-trips with
-// `segmentedFracToY`. Segment boundaries come from dividers (in pixels).
-function _yToSegmentedFrac(y, canvasH, sortedDivYs){
-  if(canvasH <= 0) return 0;
+// Given a pixel y and sorted divider pixel positions, return { seg, relFrac } where
+// seg is the integer index of the containing segment (0 = above first divider) and
+// relFrac is the block's position inside that segment as a 0..1 ratio of the inner range
+// (i.e. excluding the DIVIDER_CLEAR buffer on either side of each divider).
+function _yToSegmentSlot(y, canvasH, sortedDivYs){
   if(!sortedDivYs || sortedDivYs.length === 0){
-    return Math.max(0, Math.min(0.99, y / canvasH));
+    const ic = canvasH;
+    return { seg: 0, relFrac: Math.max(0, Math.min(1, y / Math.max(0.0001, ic))) };
   }
-  let segStartY = 0, segEndY = canvasH;
-  let segStartFrac = 0, segEndFrac = 1;
-  let hasUpperDiv = false, hasLowerDiv = false;
+  let seg = 0;
   for(let i = 0; i < sortedDivYs.length; i++){
-    if(y < sortedDivYs[i]){
-      segEndY = sortedDivYs[i];
-      segEndFrac = sortedDivYs[i] / canvasH;
-      hasLowerDiv = true;
-      break;
-    }
-    segStartY = sortedDivYs[i];
-    segStartFrac = sortedDivYs[i] / canvasH;
-    hasUpperDiv = true;
-    if(i + 1 < sortedDivYs.length){
-      segEndY = sortedDivYs[i+1];
-      segEndFrac = sortedDivYs[i+1] / canvasH;
-      hasLowerDiv = true;
-    } else {
-      segEndY = canvasH;
-      segEndFrac = 1;
-      hasLowerDiv = false;
-    }
+    if(y < sortedDivYs[i]) break;
+    seg = i + 1;
   }
-  // Mirror the clear-zone offsets used in `segmentedFracToY` so y -> frac -> y is a round-trip.
-  const innerStartY = segStartY + (hasUpperDiv ? DIVIDER_CLEAR : 0);
-  const innerEndY = segEndY - (hasLowerDiv ? DIVIDER_CLEAR : 0);
-  const innerLen = Math.max(0.0001, innerEndY - innerStartY);
-  const relFrac = Math.max(0, Math.min(1, (y - innerStartY) / innerLen));
-  const f = segStartFrac + relFrac * (segEndFrac - segStartFrac);
-  return Math.max(0, Math.min(0.99, f));
+  const segTop = seg === 0 ? 0 : sortedDivYs[seg - 1];
+  const segBottom = seg < sortedDivYs.length ? sortedDivYs[seg] : canvasH;
+  const innerTop = segTop + (seg > 0 ? DIVIDER_CLEAR : 0);
+  const innerBottom = segBottom - (seg < sortedDivYs.length ? DIVIDER_CLEAR : 0);
+  const innerSpan = Math.max(0.0001, innerBottom - innerTop);
+  return {
+    seg,
+    relFrac: Math.max(0, Math.min(1, (y - innerTop) / innerSpan))
+  };
+}
+
+// Given an explicit { seg, relFrac } and the current dividers (in pixels), compute the
+// pixel y. This is the round-trip inverse of _yToSegmentSlot. Because seg is stored
+// explicitly, the block stays in its assigned segment even if the divider moves or the
+// canvas size differs between devices.
+function _segSlotToY(seg, relFrac, canvasH, sortedDivYs){
+  const safeSeg = Math.max(0, Math.min(seg || 0, sortedDivYs.length));
+  const segTop = safeSeg === 0 ? 0 : sortedDivYs[safeSeg - 1];
+  const segBottom = safeSeg < sortedDivYs.length ? sortedDivYs[safeSeg] : canvasH;
+  const innerTop = segTop + (safeSeg > 0 ? DIVIDER_CLEAR : 0);
+  const innerBottom = segBottom - (safeSeg < sortedDivYs.length ? DIVIDER_CLEAR : 0);
+  return innerTop + Math.max(0, Math.min(1, relFrac || 0)) * Math.max(0, innerBottom - innerTop);
 }
 
 function _syncFracsForSave(){
-  // Convert pixel `y` (the runtime value used by drag/layout logic) into `frac` (the
-  // persisted, device-independent relative position) for every block and divider in the
-  // current week. Other weeks already have `frac` from migration or last render.
+  // For every block, store explicit { seg, relFrac } based on its CURRENT pixel y and
+  // the CURRENT divider positions. This is the source of truth: blocks live in segments,
+  // not in the body as a whole. Render reads (seg, relFrac) and ignores the canvas size
+  // difference between devices — a block in segment 1 stays in segment 1 anywhere.
+  // We still keep `b.frac` for backward compat (legacy renders / external readers).
   const sampleBody = document.querySelector('.calendar .day .body');
   const canvasH = (sampleBody && sampleBody.clientHeight > 50) ? sampleBody.clientHeight
                   : (parseFloat(localStorage.getItem('loopin_canvas_h')) || 800);
   if(canvasH <= 0) return;
   const wk = state.weeks[currentWeek];
   if(!wk) return;
-  // Dividers: linear (they're the segment boundaries themselves).
   (wk.dividers || []).forEach(d => { if(typeof d.y === 'number') d.frac = Math.max(0, Math.min(0.99, d.y / canvasH)); });
   const sortedDivYs = (wk.dividers || [])
     .map(d => (typeof d.y === 'number' ? d.y : null))
     .filter(v => v != null)
     .sort((a, b) => a - b);
-  // Blocks: segmented — relative position within their containing segment.
   Object.values(wk.days || {}).forEach(arr => {
     (arr || []).forEach(b => {
-      if(typeof b.y === 'number'){
-        b.frac = _yToSegmentedFrac(b.y, canvasH, sortedDivYs);
-      }
+      if(typeof b.y !== 'number') return;
+      const slot = _yToSegmentSlot(b.y, canvasH, sortedDivYs);
+      b.seg = slot.seg;
+      b.relFrac = slot.relFrac;
+      b.frac = Math.max(0, Math.min(0.99, b.y / canvasH));
     });
   });
 }
@@ -485,16 +485,21 @@ function segmentedFracToY(blockFrac, canvasH, sortedDivFracs){
   return Math.max(0, segStartY + relFrac * Math.max(0, segEndY - segStartY));
 }
 
-function renderBlocksRaw(body, dayIdx, canvasH, sortedDivFracs){
+function renderBlocksRaw(body, dayIdx, canvasH, sortedDivYs, sortedDivFracs){
   const wk = state.weeks[currentWeek]; if(!wk) return;
   const arr = wk.days[dayIdx] || [];
   body.style.minHeight = '';
   arr.forEach(b => {
     const el = body.querySelector(`[data-bid="${b.id}"]`);
     if(!el) return;
-    const y = (typeof b.frac === 'number')
-      ? segmentedFracToY(b.frac, canvasH, sortedDivFracs)
-      : (typeof b.y === 'number') ? b.y : BODY_PAD;
+    let y;
+    if(typeof b.seg === 'number' && typeof b.relFrac === 'number'){
+      y = _segSlotToY(b.seg, b.relFrac, canvasH, sortedDivYs || []);
+    } else if(typeof b.frac === 'number'){
+      y = segmentedFracToY(b.frac, canvasH, sortedDivFracs || []);
+    } else {
+      y = typeof b.y === 'number' ? b.y : BODY_PAD;
+    }
     el.style.top = y + 'px';
   });
 }
@@ -556,7 +561,10 @@ function resolveAllOverlaps(){
         .map(d => (typeof d.frac === 'number' ? d.frac : null))
         .filter(f => f != null)
         .sort((a, b) => a - b);
-      bodies.forEach((body, i) => renderBlocksRaw(body, i, canvasH, sortedDivFracs));
+      // Compute dividers' pixel positions at the CURRENT canvasH so the segment slot
+      // math stays anchored to where the divider lines actually are right now.
+      const sortedDivYs = sortedDivFracs.map(f => f * canvasH);
+      bodies.forEach((body, i) => renderBlocksRaw(body, i, canvasH, sortedDivYs, sortedDivFracs));
       repositionDividersRaw(canvasH);
     }
     _watchBodyResize();
@@ -1630,18 +1638,31 @@ function renderCalendar(){
         d.frac = Math.max(0, Math.min(0.99, d.y / migrationRefH));
       }
     });
-    // Hydrate pixel `y` from `frac` for everyone (single source of truth = frac).
-    // Dividers are linear (they're the segment boundaries). Blocks use segmented math so
-    // a block stored in segment 1 stays in segment 1 regardless of canvasH differences
-    // between desktop/mobile/different viewport sizes.
+    // Hydrate dividers: linear, they ARE the segment boundaries.
     (wk.dividers || []).forEach(d => { if(typeof d.frac === 'number') d.y = d.frac * canvasH; });
+    const sortedDivYsHy = (wk.dividers || [])
+      .map(d => (typeof d.y === 'number' ? d.y : null))
+      .filter(v => v != null)
+      .sort((a, b) => a - b);
     const sortedDivFracsHy = (wk.dividers || [])
       .map(d => (typeof d.frac === 'number' ? d.frac : null))
       .filter(f => f != null)
       .sort((a, b) => a - b);
     Object.values(wk.days || {}).forEach(arr => {
       (arr || []).forEach(b => {
-        if(typeof b.frac === 'number') b.y = segmentedFracToY(b.frac, canvasH, sortedDivFracsHy);
+        // Migrate legacy (frac-only) blocks: derive explicit (seg, relFrac).
+        if((typeof b.seg !== 'number' || typeof b.relFrac !== 'number') && typeof b.frac === 'number'){
+          const slot = _yToSegmentSlot(b.frac * canvasH, canvasH, sortedDivYsHy);
+          b.seg = slot.seg;
+          b.relFrac = slot.relFrac;
+        }
+        // Position blocks strictly from (seg, relFrac) so they cannot leak into the wrong
+        // segment regardless of canvasH or divider drift across devices.
+        if(typeof b.seg === 'number' && typeof b.relFrac === 'number'){
+          b.y = _segSlotToY(b.seg, b.relFrac, canvasH, sortedDivYsHy);
+        } else if(typeof b.frac === 'number'){
+          b.y = segmentedFracToY(b.frac, canvasH, sortedDivFracsHy);
+        }
       });
     });
   }
