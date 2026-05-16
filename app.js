@@ -1653,21 +1653,31 @@ function renderCalendar(){
       .map(d => (typeof d.frac === 'number' ? d.frac : null))
       .filter(f => f != null)
       .sort((a, b) => a - b);
+    let migratedAny = false;
     Object.values(wk.days || {}).forEach(arr => {
       (arr || []).forEach(b => {
-        // Migrate legacy data to absolute (seg, segOffset). If we have neither but have
-        // b.frac (oldest), derive seg + pixel offset from that.
+        const hadSegOffset = typeof b.segOffset === 'number';
         if(typeof b.segOffset !== 'number'){
           if(typeof b.seg === 'number' && typeof b.relFrac === 'number'){
-            // Older intermediate format: ratio-based. Convert relFrac to absolute pixels
-            // using the CURRENT inner-span, so the visual position is preserved on this
-            // device and locked in for subsequent renders.
-            const segTop = b.seg === 0 ? 0 : sortedDivYsHy[b.seg - 1];
+            // Older intermediate format: (seg, relFrac) ratio-based. Convert ratio to
+            // absolute pixels at current inner-span. b.seg is preserved as authoritative.
+            const segTop = b.seg === 0 ? 0 : (sortedDivYsHy[b.seg - 1] ?? 0);
             const segBottom = b.seg < sortedDivYsHy.length ? sortedDivYsHy[b.seg] : canvasH;
             const innerTop = segTop + (b.seg > 0 ? DIVIDER_CLEAR : 0);
             const innerBottom = segBottom - (b.seg < sortedDivYsHy.length ? DIVIDER_CLEAR : 0);
             b.segOffset = Math.max(0, b.relFrac * Math.max(0, innerBottom - innerTop));
+          } else if(typeof b.seg === 'number' && typeof b.frac === 'number'){
+            // Block has an authoritative segment assignment but no offset yet (data was
+            // written by an older version of this code). DO NOT recompute b.seg from
+            // b.frac — that's how blocks were flipping into the wrong region. Instead
+            // derive segOffset by placing the block at its frac-based y inside the
+            // already-decided segment (clamped to 0 if frac sits outside the segment now).
+            const segTop = b.seg === 0 ? 0 : (sortedDivYsHy[b.seg - 1] ?? 0);
+            const innerTop = segTop + (b.seg > 0 ? DIVIDER_CLEAR : 0);
+            b.segOffset = Math.max(0, (b.frac * canvasH) - innerTop);
           } else if(typeof b.frac === 'number'){
+            // Truly legacy (frac-only). Derive both seg and offset from frac vs current
+            // divider positions.
             const slot = _yToSegmentSlot(b.frac * canvasH, canvasH, sortedDivYsHy);
             b.seg = slot.seg;
             b.segOffset = slot.segOffset;
@@ -1675,11 +1685,20 @@ function renderCalendar(){
         }
         if(typeof b.seg === 'number' && typeof b.segOffset === 'number'){
           b.y = _segSlotToY(b.seg, b.segOffset, canvasH, sortedDivYsHy, 0);
+          if(!hadSegOffset) migratedAny = true;
         } else if(typeof b.frac === 'number'){
           b.y = segmentedFracToY(b.frac, canvasH, sortedDivFracsHy);
         }
       });
     });
+    // If any block was migrated to the new (seg, segOffset) schema, persist it back to
+    // Firestore so other devices read the fresh authoritative segment assignment instead
+    // of re-deriving (potentially wrongly) from b.frac.
+    if(migratedAny && !window.LoopinMobile?.isMobile()){
+      // Only desktop saves the migration — otherwise mobile's smaller canvasH would lock
+      // segOffsets to tiny pixel values for everyone.
+      setTimeout(() => { if(typeof save === 'function') save(); }, 50);
+    }
   }
 
   // PASS 2: Wire each body's drag handlers and append blocks.
