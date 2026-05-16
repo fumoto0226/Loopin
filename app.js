@@ -383,20 +383,37 @@ function resolveOverlapsForBody(body, dayIdx){
 }
 
 // Render blocks at their saved (frac-derived) positions without any auto-packing.
-// Used on mobile so the visual layout mirrors what's on desktop instead of collapsing
-// to the top when the shorter cell forces packBlocksUp to kick in.
-function renderBlocksRaw(body, dayIdx){
+// Recomputes y from frac using the CURRENT body height — avoids drift from stale b.y
+// that was measured before final layout was settled.
+function renderBlocksRaw(body, dayIdx, canvasH){
   const wk = state.weeks[currentWeek]; if(!wk) return;
   const arr = wk.days[dayIdx] || [];
   let maxBottom = BODY_PAD;
   arr.forEach(b => {
     const el = body.querySelector(`[data-bid="${b.id}"]`);
     if(!el) return;
-    const y = (typeof b.y === 'number') ? b.y : BODY_PAD;
+    const y = (typeof b.frac === 'number') ? (b.frac * canvasH)
+            : (typeof b.y === 'number') ? b.y : BODY_PAD;
     el.style.top = y + 'px';
     maxBottom = Math.max(maxBottom, y + el.offsetHeight);
   });
   body.style.minHeight = (maxBottom + BODY_PAD) + 'px';
+}
+
+// Re-place the existing divider lines using the same fresh canvasH that blocks see,
+// so dividers and blocks stay in the same coordinate space even if layout shifted
+// after the initial renderCalendar pass measured a stale canvasH.
+function repositionDividersRaw(canvasH){
+  const wk = state.weeks[currentWeek]; if(!wk) return;
+  const cal = document.getElementById('calendar'); if(!cal) return;
+  const bodyOffset = getCalendarBodyOffset();
+  (wk.dividers || []).forEach(divider => {
+    if(typeof divider.frac !== 'number') return;
+    const line = cal.querySelector(`.divider-line[data-id="${divider.id}"]`);
+    if(!line) return;
+    const y = divider.frac * canvasH;
+    line.style.top = (bodyOffset + y) + 'px';
+  });
 }
 
 function resolveAllOverlaps(){
@@ -405,8 +422,14 @@ function resolveAllOverlaps(){
   if(isMobile){
     // On the short mobile cell, packBlocksUp would collapse everything to the top and we
     // intentionally render blocks at their saved fractional positions instead. Position is
-    // display-only here; no state mutation, no save() back to Firestore.
-    bodies.forEach((body, i) => renderBlocksRaw(body, i));
+    // display-only here; no state mutation, no save() back to Firestore. Both blocks and
+    // dividers get repositioned using the same fresh canvasH to keep them aligned.
+    const sampleBody = bodies[0];
+    const canvasH = sampleBody ? sampleBody.clientHeight : 0;
+    if(canvasH > 50){
+      bodies.forEach((body, i) => renderBlocksRaw(body, i, canvasH));
+      repositionDividersRaw(canvasH);
+    }
     return;
   }
   let changed = false;
