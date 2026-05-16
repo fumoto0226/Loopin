@@ -91,6 +91,7 @@ body{display:flex;flex-direction:column}
 .p-row .pn{font-size:12px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .p-row .cnt{font-size:11px;color:var(--ink-soft);font-variant-numeric:tabular-nums;min-width:36px;text-align:right}
 .p-row.met .cnt{color:var(--good);font-weight:700}
+.p-row.t-max.met .cnt{color:var(--bad)}
 .p-row.over .cnt{color:var(--bad);font-weight:700}
 .p-row .bar{flex:0 0 70px;height:7px;border-radius:99px;overflow:hidden;display:block}
 .p-row.t-min .bar{background:#cdebd9}
@@ -487,6 +488,7 @@ html.auth-pending #loginOverlay{display:none}
   #sidebarWeek.expanded .h-card .p-row .bar .f{display:block;height:100%;border-radius:99px}
   #sidebarWeek.expanded .h-card .p-row .cnt{flex:0 0 auto;font-size:12px;color:var(--ink-soft);font-variant-numeric:tabular-nums;min-width:36px;text-align:right}
   #sidebarWeek.expanded .h-card .p-row.met .cnt{color:var(--good);font-weight:700}
+  #sidebarWeek.expanded .h-card .p-row.t-max.met .cnt{color:var(--bad)}
   #sidebarWeek.expanded .h-card .p-row.over .cnt{color:var(--bad);font-weight:700}
 
   /* People section is now in the action bar — hide it inside the WEEK sidebar only
