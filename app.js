@@ -382,27 +382,50 @@ function resolveOverlapsForBody(body, dayIdx){
   return changed;
 }
 
-// Render blocks at their saved (frac-derived) positions without any auto-packing.
-// Recomputes y from frac using the CURRENT body height — avoids drift from stale b.y
-// that was measured before final layout was settled.
+// Map a saved fraction to a display Y, treating each region between dividers as an
+// independent mini-calendar. A block's `frac` is relative to the whole body, but on render
+// we re-project it inside its own segment so "just below the divider" never displays at
+// "half the cell" when the cell is short (mobile). Blocks above the divider stay above;
+// blocks below the divider stay below.
+function segmentedFracToY(blockFrac, canvasH, sortedDivFracs){
+  if(!sortedDivFracs || sortedDivFracs.length === 0){
+    return blockFrac * canvasH;
+  }
+  let segStart = 0, segEnd = 1;
+  for(let i = 0; i < sortedDivFracs.length; i++){
+    if(blockFrac < sortedDivFracs[i]){
+      segEnd = sortedDivFracs[i];
+      break;
+    }
+    segStart = sortedDivFracs[i];
+    segEnd = (i + 1 < sortedDivFracs.length) ? sortedDivFracs[i+1] : 1;
+  }
+  const segLen = Math.max(0.0001, segEnd - segStart);
+  const relFrac = (blockFrac - segStart) / segLen;
+  const segStartY = segStart * canvasH + (segStart > 0 ? DIVIDER_CLEAR : 0);
+  const segEndY = segEnd * canvasH - (segEnd < 1 ? DIVIDER_CLEAR : 0);
+  return Math.max(BODY_PAD, segStartY + relFrac * Math.max(0, segEndY - segStartY));
+}
+
 function renderBlocksRaw(body, dayIdx, canvasH){
   const wk = state.weeks[currentWeek]; if(!wk) return;
   const arr = wk.days[dayIdx] || [];
-  let maxBottom = BODY_PAD;
+  // Reset any inflated minHeight from prior passes so body sizes to its natural cell
+  // height — otherwise the next clientHeight measurement drifts upward over time.
+  body.style.minHeight = '';
   arr.forEach(b => {
     const el = body.querySelector(`[data-bid="${b.id}"]`);
     if(!el) return;
+    // Linear frac mapping — identical to desktop's b.y = b.frac * canvasH so positions
+    // round-trip across devices proportionally.
     const y = (typeof b.frac === 'number') ? (b.frac * canvasH)
             : (typeof b.y === 'number') ? b.y : BODY_PAD;
     el.style.top = y + 'px';
-    maxBottom = Math.max(maxBottom, y + el.offsetHeight);
   });
-  body.style.minHeight = (maxBottom + BODY_PAD) + 'px';
 }
 
-// Re-place the existing divider lines using the same fresh canvasH that blocks see,
-// so dividers and blocks stay in the same coordinate space even if layout shifted
-// after the initial renderCalendar pass measured a stale canvasH.
+// Re-place divider lines using the same fresh canvasH that blocks see — divider position
+// is the raw frac×canvasH (they're the boundaries themselves, not subject to segment mapping).
 function repositionDividersRaw(canvasH){
   const wk = state.weeks[currentWeek]; if(!wk) return;
   const cal = document.getElementById('calendar'); if(!cal) return;
@@ -416,20 +439,49 @@ function repositionDividersRaw(canvasH){
   });
 }
 
+let _calResizeObserver = null;
+function _ensureCalResizeObserver(){
+  if(_calResizeObserver) return _calResizeObserver;
+  if(typeof ResizeObserver === 'undefined') return null;
+  let _lastH = 0;
+  _calResizeObserver = new ResizeObserver(entries => {
+    if(!window.LoopinMobile || !window.LoopinMobile.isMobile()) return;
+    // Debounce on changed height only — ignore sub-pixel jitter and width-only changes.
+    const h = entries[0]?.contentRect?.height || 0;
+    if(Math.abs(h - _lastH) < 1) return;
+    _lastH = h;
+    // Run on next frame so the new layout is fully painted before we recompute.
+    requestAnimationFrame(() => {
+      if(currentView !== 'week') return;
+      resolveAllOverlaps();
+    });
+  });
+  return _calResizeObserver;
+}
+function _watchBodyResize(){
+  const obs = _ensureCalResizeObserver(); if(!obs) return;
+  const sampleBody = document.querySelector('.calendar .day .body');
+  if(!sampleBody) return;
+  obs.disconnect();
+  obs.observe(sampleBody);
+}
+
 function resolveAllOverlaps(){
   const isMobile = window.LoopinMobile && window.LoopinMobile.isMobile();
   const bodies = document.querySelectorAll('.calendar .day .body');
   if(isMobile){
-    // On the short mobile cell, packBlocksUp would collapse everything to the top and we
-    // intentionally render blocks at their saved fractional positions instead. Position is
-    // display-only here; no state mutation, no save() back to Firestore. Both blocks and
-    // dividers get repositioned using the same fresh canvasH to keep them aligned.
+    // Mobile: render blocks per-segment so dividers act as boundaries between independent
+    // mini-calendars. canvasH is read from the LIVE body via getBoundingClientRect (forces
+    // layout) so we never get a stale early measurement. No state mutation, no save().
     const sampleBody = bodies[0];
-    const canvasH = sampleBody ? sampleBody.clientHeight : 0;
+    const canvasH = sampleBody ? sampleBody.getBoundingClientRect().height : 0;
     if(canvasH > 50){
       bodies.forEach((body, i) => renderBlocksRaw(body, i, canvasH));
       repositionDividersRaw(canvasH);
     }
+    // Re-bind the observer so later layout shifts (orientation change, sheet expand, etc.)
+    // trigger a fresh pass.
+    _watchBodyResize();
     return;
   }
   let changed = false;
@@ -442,6 +494,21 @@ let currentDragHeight = null;
 let lastDragY = null;
 let dragDir = 'down';
 let dividerDrag = null;
+// Safety net: if the mouse leaves the window (or focus is lost) without firing mouseup —
+// e.g. user drags onto the OS bar or alt-tabs — clear any stuck divider-drag state so the
+// next click is not blocked. The mouseup handler does the real commit when it fires.
+window.addEventListener('blur', () => {
+  if(dividerDrag){
+    try{ hideDividerSnapLine && hideDividerSnapLine(); }catch{}
+    dividerDrag = null;
+  }
+});
+window.addEventListener('mouseleave', () => {
+  if(dividerDrag){
+    try{ hideDividerSnapLine && hideDividerSnapLine(); }catch{}
+    dividerDrag = null;
+  }
+});
 let suppressSourceReveal = false;
 let suppressPlacementAnimation = false;
 let _initialRenderDone = false;
@@ -849,15 +916,18 @@ function previewLayoutMulti(cursorBody, cursorDayIdx, cursorY){
     heights[it.id] = el ? el.offsetHeight : 36;
   }
 
-  // Multi-ghost snap (horizontal alignment) + edge-stick (vertical adjacency).
+  // Multi-ghost snap (horizontal alignment) + edge-stick (vertical adjacency)
+  // + boundary stick (divider lines and body top/bottom).
   const baseYDelta = rawY - anchor.y;
   let bestAnchorY = rawY;
   let bestAbsAdjust = Infinity;
-  let bestKind = null; // 'snap' | 'stick'
+  let bestKind = null; // 'snap' | 'stick' | 'boundary'
   let bestSnapCol = null;
   let bestSnapLine = null;
   let bestStickCol = null;
   let bestStickEdgeY = null;
+  let bestBoundaryCol = null;
+  let bestBoundaryEdgeY = null;
   const wkSnap = state.weeks[currentWeek];
   const allBodiesSnap = document.querySelectorAll('.calendar .day .body');
   for(const it of payload.items){
@@ -873,6 +943,14 @@ function previewLayoutMulti(cursorBody, cursorDayIdx, cursorY){
         bestKind = 'snap';
         bestSnapCol = newCol; bestSnapLine = gSnap.snapLine;
       }
+    }
+    // Divider / body-boundary stick — same logic as the single-block path.
+    const bs = applyBoundaryStick(newCol, ghostY, ghostH);
+    if(bs.edgeY != null && bs.dist < bestAbsAdjust){
+      bestAbsAdjust = bs.dist;
+      bestAnchorY = rawY + (bs.y - ghostY);
+      bestKind = 'boundary';
+      bestBoundaryCol = newCol; bestBoundaryEdgeY = bs.edgeY;
     }
     const colSess = dragSession.multiCol && dragSession.multiCol[newCol];
     const dstBody = allBodiesSnap[newCol];
@@ -959,6 +1037,9 @@ function previewLayoutMulti(cursorBody, cursorDayIdx, cursorY){
     hideStickIndicator();
   } else if(bestKind === 'stick' && bestStickEdgeY != null){
     showStickIndicator(allBodies[bestStickCol] || cursorBody, bestStickEdgeY);
+    hideGuideLine();
+  } else if(bestKind === 'boundary' && bestBoundaryEdgeY != null){
+    showStickIndicator(allBodies[bestBoundaryCol] || cursorBody, bestBoundaryEdgeY);
     hideGuideLine();
   } else {
     hideGuideLine();

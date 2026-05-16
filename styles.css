@@ -104,7 +104,7 @@ body{display:flex;flex-direction:column}
 .calendar-wrap{flex:1;min-width:0;display:flex;flex-direction:column;background:#fff;position:relative}
 .add-divider-btn{position:absolute;bottom:10px;left:14px;background:#fff;border:1px dashed #cfd2dd;color:var(--ink-soft);font-size:12px;padding:5px 12px;border-radius:99px;cursor:pointer;z-index:8}
 .add-divider-btn:hover{color:var(--ink);border-color:#9aa0b3;background:var(--line-2)}
-.divider-line{position:absolute;left:0;right:0;height:1px;background:var(--line);cursor:ns-resize;z-index:7;transition:background .15s}
+.divider-line{position:absolute;left:0;right:0;height:1px;background:var(--line);cursor:ns-resize;z-index:7;transition:background .15s;pointer-events:auto}
 .divider-line::before{content:'';position:absolute;left:0;right:0;top:-8px;bottom:-8px}
 .divider-line:hover, .divider-line.dragging{background:#9aa0b3}
 .divider-remove{position:absolute;right:10px;top:50%;transform:translateY(-50%);width:20px;height:20px;border-radius:999px;border:1px solid #d7dbe6;background:#fff;display:flex;align-items:center;justify-content:center;padding:0;box-shadow:0 4px 10px rgba(20,22,40,.12);opacity:0;pointer-events:none;transition:opacity .15s ease,border-color .15s ease,background .15s ease;font-size:0;cursor:pointer}
@@ -397,8 +397,10 @@ html.auth-pending #loginOverlay{display:none}
   .topbar-right{gap:6px;flex-wrap:wrap;flex:1;justify-content:flex-end}
   .brand h1{font-size:17px}
   .brand .tag{display:none}
-  .group-switch{margin-left:6px;padding:3px 10px;max-width:140px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
-  .group-switch #currentGroupName{overflow:hidden;text-overflow:ellipsis}
+  .brand{flex:0 1 auto;min-width:0;overflow:hidden}
+  .group-switch{margin-left:6px;padding:3px 10px;max-width:90px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;flex:0 1 auto;min-width:0}
+  .group-switch #currentGroupName{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:inline-block;max-width:100%;vertical-align:middle}
+  .week-label{white-space:nowrap}
   .week-nav{gap:4px}
   .week-label{font-size:12px;margin-left:2px}
   .ghost{padding:5px 10px;font-size:12px}
@@ -431,15 +433,20 @@ html.auth-pending #loginOverlay{display:none}
   /* === Vertical stack: calendar on top, habits panel at the bottom === */
   .main{flex-direction:column;position:relative;overflow:hidden}
   .calendar-wrap{order:1;flex:1 1 auto;min-height:0;overflow:hidden}
-  #weekArea{padding-bottom:88px}
-  /* On mobile the week sidebar becomes a fixed bottom sheet that slides up on demand. */
+  /* Reserve room for the fixed bottom sheet (strip + iOS home indicator). */
+  #weekArea{padding-bottom:calc(88px + env(safe-area-inset-bottom, 0px))}
+  /* On mobile the week sidebar becomes a fixed bottom sheet that slides up on demand.
+     The sheet sits above the iOS home indicator using safe-area-inset-bottom so its
+     visible content lines up with the padding reservation on #weekArea. */
   #sidebarWeek{position:fixed;left:0;right:0;bottom:0;width:100%;
-    height:88px;max-height:none;min-height:0;flex:0 0 auto;z-index:50;
+    height:calc(88px + env(safe-area-inset-bottom, 0px));
+    padding-bottom:env(safe-area-inset-bottom, 0px);
+    max-height:none;min-height:0;flex:0 0 auto;z-index:50;
     transition:height .28s cubic-bezier(.22,.7,.32,1);
     background:#fff;box-shadow:0 -6px 18px rgba(20,22,40,.08);
     border-right:0;border-top:1px solid var(--line);
-    display:flex;flex-direction:column;overflow:hidden;transform:none}
-  #sidebarWeek.expanded{height:55vh}
+    display:flex;flex-direction:column;overflow:hidden;transform:none;box-sizing:border-box}
+  #sidebarWeek.expanded{height:calc(55vh + env(safe-area-inset-bottom, 0px))}
   #sidebarMonth{order:2;position:static;flex:0 0 auto;height:34vh;max-height:none;width:100%;max-width:none;
     transform:none;border-right:0;border-top:1px solid var(--line);
     box-shadow:0 -6px 18px rgba(20,22,40,.06);overflow:hidden;display:flex;flex-direction:column}
