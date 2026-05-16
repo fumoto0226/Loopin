@@ -2048,7 +2048,7 @@ function renderAll(){
     return;
   }
   const cal = document.getElementById('calendar');
-  if(cal) cal.classList.toggle('no-drop-anim', suppressPlacementAnimation);
+  if(cal) cal.classList.add('no-drop-anim');
   renderPeople(); renderCopyPrevButton(); renderHabitCards(); renderLibrary(); renderCalendar();
   applySelectionStyles();
   requestAnimationFrame(resolveAllOverlaps);
