@@ -75,14 +75,14 @@ let currentWeek = isoWeekKey(new Date());
 function uid(){ return Math.random().toString(36).slice(2,9) }
 let _applyingRemote = false;
 let _applyingRemoteLib = false;
-// Given a pixel y and sorted divider pixel positions, return { seg, relFrac } where
+// Given a pixel y and sorted divider pixel positions, return { seg, segOffset } where
 // seg is the integer index of the containing segment (0 = above first divider) and
-// relFrac is the block's position inside that segment as a 0..1 ratio of the inner range
-// (i.e. excluding the DIVIDER_CLEAR buffer on either side of each divider).
+// segOffset is the block's ABSOLUTE pixel distance from the segment's inner-top (i.e.
+// from divider_y + DIVIDER_CLEAR). This is what gets persisted — same value across any
+// device. The visual distance from the divider stays the same regardless of canvas size.
 function _yToSegmentSlot(y, canvasH, sortedDivYs){
   if(!sortedDivYs || sortedDivYs.length === 0){
-    const ic = canvasH;
-    return { seg: 0, relFrac: Math.max(0, Math.min(1, y / Math.max(0.0001, ic))) };
+    return { seg: 0, segOffset: Math.max(0, y) };
   }
   let seg = 0;
   for(let i = 0; i < sortedDivYs.length; i++){
@@ -90,27 +90,25 @@ function _yToSegmentSlot(y, canvasH, sortedDivYs){
     seg = i + 1;
   }
   const segTop = seg === 0 ? 0 : sortedDivYs[seg - 1];
-  const segBottom = seg < sortedDivYs.length ? sortedDivYs[seg] : canvasH;
   const innerTop = segTop + (seg > 0 ? DIVIDER_CLEAR : 0);
-  const innerBottom = segBottom - (seg < sortedDivYs.length ? DIVIDER_CLEAR : 0);
-  const innerSpan = Math.max(0.0001, innerBottom - innerTop);
-  return {
-    seg,
-    relFrac: Math.max(0, Math.min(1, (y - innerTop) / innerSpan))
-  };
+  return { seg, segOffset: Math.max(0, y - innerTop) };
 }
 
-// Given an explicit { seg, relFrac } and the current dividers (in pixels), compute the
-// pixel y. This is the round-trip inverse of _yToSegmentSlot. Because seg is stored
-// explicitly, the block stays in its assigned segment even if the divider moves or the
-// canvas size differs between devices.
-function _segSlotToY(seg, relFrac, canvasH, sortedDivYs){
+// Given an explicit { seg, segOffset } and the current dividers (in pixels), compute the
+// pixel y. The offset is taken as-is in pixels; if the segment is smaller than the offset
+// (e.g. on a phone where canvas is short), the offset is clamped so the block stays
+// inside its assigned segment rather than spilling across the next divider.
+function _segSlotToY(seg, segOffset, canvasH, sortedDivYs, blockH){
   const safeSeg = Math.max(0, Math.min(seg || 0, sortedDivYs.length));
   const segTop = safeSeg === 0 ? 0 : sortedDivYs[safeSeg - 1];
   const segBottom = safeSeg < sortedDivYs.length ? sortedDivYs[safeSeg] : canvasH;
   const innerTop = segTop + (safeSeg > 0 ? DIVIDER_CLEAR : 0);
   const innerBottom = segBottom - (safeSeg < sortedDivYs.length ? DIVIDER_CLEAR : 0);
-  return innerTop + Math.max(0, Math.min(1, relFrac || 0)) * Math.max(0, innerBottom - innerTop);
+  const innerSpan = Math.max(0, innerBottom - innerTop);
+  const safeBlockH = blockH || 0;
+  const maxOffset = Math.max(0, innerSpan - safeBlockH);
+  const clampedOffset = Math.max(0, Math.min(maxOffset, segOffset || 0));
+  return innerTop + clampedOffset;
 }
 
 function _syncFracsForSave(){
@@ -135,7 +133,7 @@ function _syncFracsForSave(){
       if(typeof b.y !== 'number') return;
       const slot = _yToSegmentSlot(b.y, canvasH, sortedDivYs);
       b.seg = slot.seg;
-      b.relFrac = slot.relFrac;
+      b.segOffset = slot.segOffset;
       b.frac = Math.max(0, Math.min(0.99, b.y / canvasH));
     });
   });
@@ -492,9 +490,10 @@ function renderBlocksRaw(body, dayIdx, canvasH, sortedDivYs, sortedDivFracs){
   arr.forEach(b => {
     const el = body.querySelector(`[data-bid="${b.id}"]`);
     if(!el) return;
+    const blockH = el.offsetHeight || 0;
     let y;
-    if(typeof b.seg === 'number' && typeof b.relFrac === 'number'){
-      y = _segSlotToY(b.seg, b.relFrac, canvasH, sortedDivYs || []);
+    if(typeof b.seg === 'number' && typeof b.segOffset === 'number'){
+      y = _segSlotToY(b.seg, b.segOffset, canvasH, sortedDivYs || [], blockH);
     } else if(typeof b.frac === 'number'){
       y = segmentedFracToY(b.frac, canvasH, sortedDivFracs || []);
     } else {
@@ -1650,16 +1649,26 @@ function renderCalendar(){
       .sort((a, b) => a - b);
     Object.values(wk.days || {}).forEach(arr => {
       (arr || []).forEach(b => {
-        // Migrate legacy (frac-only) blocks: derive explicit (seg, relFrac).
-        if((typeof b.seg !== 'number' || typeof b.relFrac !== 'number') && typeof b.frac === 'number'){
-          const slot = _yToSegmentSlot(b.frac * canvasH, canvasH, sortedDivYsHy);
-          b.seg = slot.seg;
-          b.relFrac = slot.relFrac;
+        // Migrate legacy data to absolute (seg, segOffset). If we have neither but have
+        // b.frac (oldest), derive seg + pixel offset from that.
+        if(typeof b.segOffset !== 'number'){
+          if(typeof b.seg === 'number' && typeof b.relFrac === 'number'){
+            // Older intermediate format: ratio-based. Convert relFrac to absolute pixels
+            // using the CURRENT inner-span, so the visual position is preserved on this
+            // device and locked in for subsequent renders.
+            const segTop = b.seg === 0 ? 0 : sortedDivYsHy[b.seg - 1];
+            const segBottom = b.seg < sortedDivYsHy.length ? sortedDivYsHy[b.seg] : canvasH;
+            const innerTop = segTop + (b.seg > 0 ? DIVIDER_CLEAR : 0);
+            const innerBottom = segBottom - (b.seg < sortedDivYsHy.length ? DIVIDER_CLEAR : 0);
+            b.segOffset = Math.max(0, b.relFrac * Math.max(0, innerBottom - innerTop));
+          } else if(typeof b.frac === 'number'){
+            const slot = _yToSegmentSlot(b.frac * canvasH, canvasH, sortedDivYsHy);
+            b.seg = slot.seg;
+            b.segOffset = slot.segOffset;
+          }
         }
-        // Position blocks strictly from (seg, relFrac) so they cannot leak into the wrong
-        // segment regardless of canvasH or divider drift across devices.
-        if(typeof b.seg === 'number' && typeof b.relFrac === 'number'){
-          b.y = _segSlotToY(b.seg, b.relFrac, canvasH, sortedDivYsHy);
+        if(typeof b.seg === 'number' && typeof b.segOffset === 'number'){
+          b.y = _segSlotToY(b.seg, b.segOffset, canvasH, sortedDivYsHy, 0);
         } else if(typeof b.frac === 'number'){
           b.y = segmentedFracToY(b.frac, canvasH, sortedDivFracsHy);
         }
