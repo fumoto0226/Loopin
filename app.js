@@ -1094,7 +1094,7 @@ function renderLibrary(){
 function editLibrary(id){
   const t=id?state.library.find(x=>x.id===id):null;
   openModal(t?'编辑习惯（库）':'新建习惯（加入库）',`
-    <div class="field"><label>名字</label><input id="hName" maxlength="20" value="${escapeHtml(t?.name||'')}" /></div>
+    <div class="field"><label>名字</label><input id="hName" maxlength="40" value="${escapeHtml(t?.name||'')}" /></div>
     <div class="row type-target">
       <div class="field"><label>类型</label>${typeSelectHtml('hType', t?.type)}</div>
       <div class="field"><label>次数 N</label><input id="hTarget" type="number" min="1" value="${t?.target||3}" /></div>
@@ -1267,7 +1267,7 @@ function editWeekHabit(hid){
   const wk=ensureWeek(currentWeek);
   const h=wk.habits.find(x=>x.id===hid); if(!h) return;
   openModal('编辑本周习惯',`
-    <div class="field"><label>名字</label><input id="hName" maxlength="20" value="${escapeHtml(h.name)}" /></div>
+    <div class="field"><label>名字</label><input id="hName" maxlength="40" value="${escapeHtml(h.name)}" /></div>
     <div class="row type-target">
       <div class="field"><label>类型</label>${typeSelectHtml('hType', h.type)}</div>
       <div class="field"><label>次数 N</label><input id="hTarget" type="number" min="1" value="${h.target}" /></div>
@@ -1334,7 +1334,7 @@ document.getElementById('addWeekHabit').onclick=(e)=>{
 function newWeekOnlyHabit(){
   const wk=ensureWeek(currentWeek);
   openModal('新建（仅本周）',`
-    <div class="field"><label>名字</label><input id="hName" maxlength="20" placeholder="如 跑步" /></div>
+    <div class="field"><label>名字</label><input id="hName" maxlength="40" placeholder="如 跑步" /></div>
     <div class="row type-target">
       <div class="field"><label>类型</label>${typeSelectHtml('hType','min')}</div>
       <div class="field"><label>次数 N</label><input id="hTarget" type="number" min="1" value="3" /></div>
