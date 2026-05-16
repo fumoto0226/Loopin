@@ -357,7 +357,7 @@ function buildSegmentLayout(blocks, dividerYs){
   return pos;
 }
 
-function resolveOverlapsForBody(body, dayIdx){
+function resolveOverlapsForBody(body, dayIdx, displayOnly){
   const wk = state.weeks[currentWeek]; if(!wk) return false;
   const arr = wk.days[dayIdx] || [];
   const blocks = arr.map(b=>{
@@ -374,7 +374,9 @@ function resolveOverlapsForBody(body, dayIdx){
     if(!el) continue;
     const h = el.offsetHeight;
     const newY = pos[b.id];
-    if(newY !== b.y){ b.y = newY; changed = true }
+    if(newY !== b.y){
+      if(!displayOnly){ b.y = newY; changed = true; }
+    }
     el.style.top = newY + 'px';
     maxBottom = Math.max(maxBottom, newY + h);
   }
@@ -382,10 +384,15 @@ function resolveOverlapsForBody(body, dayIdx){
   return changed;
 }
 function resolveAllOverlaps(){
+  // On mobile the day-cell is much shorter than desktop, so blocks frequently overflow the
+  // segment bounds and `packBlocksUp` packs them tight. We must NOT persist that to Firestore
+  // — otherwise the smaller `frac` values propagate to the desktop client and the blocks
+  // there visibly creep upward over time. Mobile reconciles for display only.
+  const isMobile = window.LoopinMobile && window.LoopinMobile.isMobile();
   const bodies = document.querySelectorAll('.calendar .day .body');
   let changed = false;
-  bodies.forEach((body, i) => { if(resolveOverlapsForBody(body, i)) changed = true });
-  if(changed) save();
+  bodies.forEach((body, i) => { if(resolveOverlapsForBody(body, i, isMobile)) changed = true });
+  if(changed && !isMobile) save();
 }
 
 let currentDragPayload = null;
@@ -395,6 +402,7 @@ let dragDir = 'down';
 let dividerDrag = null;
 let suppressSourceReveal = false;
 let suppressPlacementAnimation = false;
+let _initialRenderDone = false;
 let committedDropThisDrag = false;
 
 const dragSession = {
@@ -2049,7 +2057,8 @@ function renderAll(){
     return;
   }
   const cal = document.getElementById('calendar');
-  if(cal) cal.classList.add('no-drop-anim');
+  const suppress = suppressPlacementAnimation || !_initialRenderDone;
+  if(cal) cal.classList.toggle('no-drop-anim', suppress);
   renderPeople(); renderCopyPrevButton(); renderHabitCards(); renderLibrary(); renderCalendar();
   applySelectionStyles();
   requestAnimationFrame(resolveAllOverlaps);
@@ -2057,6 +2066,7 @@ function renderAll(){
     requestAnimationFrame(()=>{
       suppressSourceReveal = false;
       suppressPlacementAnimation = false;
+      _initialRenderDone = true;
       document.getElementById('calendar')?.classList.remove('no-drop-anim');
     });
   });
