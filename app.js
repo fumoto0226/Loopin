@@ -1364,6 +1364,7 @@ function renderCalendar(){
   document.getElementById('weekLabel').textContent=fmtRange(monday);
   try{ localStorage.setItem('loopin_last_week', currentWeek) }catch{}
   const todayKey=isoWeekKey(new Date());
+  document.getElementById('thisWeek').classList.toggle('is-current', currentWeek === todayKey);
   const todayDow=(new Date().getDay()+6)%7;
   const wk=state.weeks[currentWeek];
 
@@ -2087,6 +2088,9 @@ function fmtShortDate(d){ return `${d.getMonth()+1}/${d.getDate()}` }
 function renderMonthView(){
   renderLibraryInMonthSidebar();
   document.getElementById('monthLabel').textContent = fmtMonthLabel(currentMonth);
+  const now = new Date();
+  const isCurMonth = currentMonth.getFullYear() === now.getFullYear() && currentMonth.getMonth() === now.getMonth();
+  document.getElementById('thisMonth').classList.toggle('is-current', isCurMonth);
   const grid = document.getElementById('monthGrid');
   grid.innerHTML = '';
 
