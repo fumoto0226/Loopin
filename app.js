@@ -1619,9 +1619,14 @@ function renderCalendar(){
 }
 
 function getCalendarBodyOffset(){
-  const firstBody = document.querySelector('.calendar .day .body');
-  if(!firstBody) return 0;
-  return firstBody.offsetTop;
+  const cal = document.getElementById('calendar');
+  const firstBody = cal?.querySelector('.day .body');
+  if(!cal || !firstBody) return 0;
+  // Use bounding rects so the value doesn't depend on offsetParent chain (which can give
+  // different results on iOS Safari when layout hasn't fully settled).
+  const calRect = cal.getBoundingClientRect();
+  const bodyRect = firstBody.getBoundingClientRect();
+  return Math.max(0, bodyRect.top - calRect.top);
 }
 function getDividerMaxY(){
   const cal = document.getElementById('calendar');
@@ -1817,7 +1822,9 @@ function renderWeekDividers(){
       const line = document.createElement('div');
       line.className = 'divider-line';
       line.dataset.id = divider.id;
-      line.style.top = (bodyOffset + clampDividerY(divider.y)) + 'px';
+      // Use raw y (no clamp) so divider stays in the same coordinate system as blocks,
+      // which also use raw frac×canvasH. Clamping is reserved for active user drag.
+      line.style.top = (bodyOffset + (divider.y || 0)) + 'px';
       line.title = '拖动调整位置';
       const removeBtn = document.createElement('button');
       removeBtn.type = 'button';
@@ -2193,6 +2200,12 @@ function renderAll(){
       document.getElementById('calendar')?.classList.remove('no-drop-anim');
     });
   });
+  // iOS Safari sometimes reports stale layout values inside rAF — schedule one more pass
+  // after the layout has truly settled so blocks and dividers line up at their final canvasH.
+  setTimeout(() => {
+    if(currentView !== 'week') return;
+    if(window.LoopinMobile && window.LoopinMobile.isMobile()) resolveAllOverlaps();
+  }, 300);
 }
 
 // ===== view switching + month view =====
