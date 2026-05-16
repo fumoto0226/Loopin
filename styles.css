@@ -41,6 +41,7 @@ body{display:flex;flex-direction:column}
 .main{flex:1;display:flex;min-height:0;min-width:0}
 .sidebar{flex:0 0 var(--sidebar-w);width:var(--sidebar-w);display:flex;flex-direction:column;border-right:1px solid var(--line);background:var(--bg-2);min-height:0}
 .week-strip{display:none}
+.ms-resize{display:none}
 .sec{padding:14px 16px;border-bottom:1px solid var(--line);display:flex;flex-direction:column;min-height:0}
 .sec-grow{flex:1;min-height:0}
 .sec-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
@@ -432,9 +433,13 @@ html.auth-pending #loginOverlay{display:none}
     border-right:0;border-top:1px solid var(--line);
     display:flex;flex-direction:column;overflow:hidden;transform:none}
   #sidebarWeek.expanded{height:55vh}
-  #sidebarMonth{order:2;position:static;flex:0 0 auto;max-height:34vh;width:100%;max-width:none;
+  #sidebarMonth{order:2;position:static;flex:0 0 auto;height:34vh;max-height:none;width:100%;max-width:none;
     transform:none;border-right:0;border-top:1px solid var(--line);
-    box-shadow:0 -6px 18px rgba(20,22,40,.06);overflow:hidden}
+    box-shadow:0 -6px 18px rgba(20,22,40,.06);overflow:hidden;display:flex;flex-direction:column}
+  #sidebarMonth .ms-resize{display:flex;justify-content:center;align-items:center;height:16px;flex:0 0 16px;cursor:row-resize;touch-action:none;background:#fff;-webkit-tap-highlight-color:transparent}
+  #sidebarMonth .ms-resize .ms-grip{width:36px;height:4px;border-radius:2px;background:#cfd2dd;display:block;pointer-events:none}
+  #sidebarMonth.resizing{transition:none}
+  #sidebarMonth.resizing .ms-resize .ms-grip{background:#7c5cff}
   /* Hide rich panel when collapsed */
   #sidebarWeek:not(.expanded) #weekHabitSec{display:none}
   /* Strip (always visible) */
@@ -446,16 +451,25 @@ html.auth-pending #loginOverlay{display:none}
   .week-strip .ws-chip{flex:0 0 auto;padding:4px 10px;border-radius:999px;font-size:11px;font-weight:600;border:1px solid var(--line);background:#fff;white-space:nowrap;cursor:pointer;max-width:140px;overflow:hidden;-webkit-tap-highlight-color:transparent;touch-action:pan-x;user-select:none;display:inline-flex;align-items:center;gap:5px}
   .week-strip .ws-chip .ws-chip-name{overflow:hidden;text-overflow:ellipsis;max-width:90px}
   .week-strip .ws-chip .ws-chip-num{display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 5px;border-radius:999px;font-weight:700;font-variant-numeric:tabular-nums;font-size:10px}
-  .week-strip .ws-chip.t-min .ws-chip-num{background:#cdebd9;color:#1a8a5b}
-  .week-strip .ws-chip.t-max .ws-chip-num{background:#f6cdd2;color:#b03044}
+  .week-strip .ws-chip .ws-chip-num{background:rgba(255,255,255,.85);box-shadow:0 0 0 1px rgba(0,0,0,.04) inset}
+  .week-strip .ws-chip.t-min .ws-chip-num{color:#1a8a5b}
+  .week-strip .ws-chip.t-max .ws-chip-num{color:#b03044}
   .week-strip .ws-chip.t-min{color:#1a8a5b;border-color:#7ad6a5;background:#eaf8f0}
   .week-strip .ws-chip.t-max{color:#b03044;border-color:#f0a3ad;background:#fdecee}
   .week-strip .ws-toggle{flex:0 0 auto;border:1px solid var(--line);background:#fff;border-radius:999px;font-size:11px;padding:4px 10px;color:var(--ink-soft);cursor:pointer}
   /* Expanded rich panel — restore desktop-ish look so per-person rows are visible */
   #sidebarWeek.expanded #weekHabitSec{flex:1;min-height:0;padding:10px 12px;display:flex;flex-direction:column;border-bottom:0}
-  #sidebarWeek.expanded .habit-cards{flex-direction:column;flex-wrap:nowrap;overflow-y:auto;overflow-x:hidden;flex:1;min-height:0;gap:8px;padding:2px 0 12px;touch-action:pan-y}
-  #sidebarWeek.expanded .h-card{flex:0 0 auto;max-width:none;width:100%;background:#fff;border:1px solid var(--line);border-left:4px solid var(--good);border-radius:10px;display:flex;flex-direction:column;overflow:hidden;cursor:default}
-  #sidebarWeek.expanded .h-card.t-max{border-left-color:var(--bad)}
+  #sidebarWeek.expanded .habit-cards{flex-direction:column;flex-wrap:nowrap;overflow-y:auto;overflow-x:hidden;flex:1 1 auto;min-height:0;gap:8px;padding:2px 0 12px;touch-action:pan-y;-webkit-overflow-scrolling:touch;overscroll-behavior-y:contain}
+  #sidebarWeek.expanded .h-card{flex:0 0 auto;max-width:none;width:100%;border-radius:12px;border:1.5px dashed #cfd4e0;background:#fff;display:flex;flex-direction:column;overflow:hidden;cursor:default}
+  #sidebarWeek.expanded .h-card.t-min{border-color:#7ad6a5;background:#f6fcf9}
+  #sidebarWeek.expanded .h-card.t-max{border-color:#f0a3ad;background:#fff7f8}
+  #sidebarWeek.expanded .h-card.t-min .nm{color:#0d6b43}
+  #sidebarWeek.expanded .h-card.t-max .nm{color:#9c2436}
+  #sidebarWeek.expanded .h-card .nm{font-weight:700}
+  #sidebarWeek.expanded .h-card .rule{color:#fff;font-weight:600}
+  #sidebarWeek.expanded .h-card.t-min .rule{background:var(--good)}
+  #sidebarWeek.expanded .h-card.t-max .rule{background:var(--bad)}
+  #sidebarWeek.expanded .h-card .rows{border-top:1px solid rgba(0,0,0,.06);margin:0 6px;padding:8px 4px}
   #sidebarWeek.expanded .h-card .hdr{display:flex;align-items:center;gap:8px;padding:8px 10px;cursor:pointer}
   #sidebarWeek.expanded .h-card .nm{font-size:13px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   #sidebarWeek.expanded .h-card .rule{font-size:11px;padding:2px 8px;border-radius:999px;flex:0 0 auto}
@@ -501,9 +515,9 @@ html.auth-pending #loginOverlay{display:none}
   .calendar .block .note,
   .calendar .block .edit,
   .calendar .block .x{display:none}
-  .calendar .block .av{width:16px;height:16px;font-size:11px;border:0;box-shadow:none;background:transparent;color:inherit}
+  .calendar .block .av{width:16px;height:16px;line-height:16px;font-size:11px;border:0;box-shadow:none;background:transparent;color:inherit;border-radius:50%;box-sizing:border-box}
   .calendar .block .av.av-emoji{font-size:14px;background:transparent}
-  .calendar .block .av.empty{background:transparent;color:var(--ink-soft)}
+  .calendar .block .av.empty{background:#eef0f6;color:#8a90a4;font-size:10px;font-weight:600}
   /* Mobile: show divider lines (created on desktop) as read-only decoration. */
   .add-divider-btn{display:none}
   .divider-line{pointer-events:none;cursor:default}
@@ -544,7 +558,8 @@ html.auth-pending #loginOverlay{display:none}
   /* === month view library list: 3-column grid, native vertical scroll === */
   #sidebarMonth .habit-cards{display:grid;grid-template-columns:repeat(3,1fr);grid-auto-rows:min-content;gap:6px;
     overflow-x:hidden;overflow-y:auto;-webkit-overflow-scrolling:touch;
-    align-items:start;padding:2px 2px 8px;touch-action:pan-y}
+    align-items:start;padding:2px 2px 8px;touch-action:pan-y;
+    flex:1 1 auto;min-height:0;overscroll-behavior-y:contain}
   #sidebarMonth .habit-cards::-webkit-scrollbar{display:none}
   #sidebarMonth .habit-cards{scrollbar-width:none}
   /* hint above the library on mobile is redundant — tap is the only interaction */
@@ -556,6 +571,8 @@ html.auth-pending #loginOverlay{display:none}
   .lib-card .name{font-size:11px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .lib-card .rule{font-size:9px;color:var(--ink-soft);padding:0;background:transparent;font-weight:400;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .lib-card .edit{padding:2px 4px;font-size:12px;flex:0 0 auto}
+  .lib-card .del{padding:2px 6px;font-size:14px;line-height:1;flex:0 0 auto;border:0;background:transparent;color:var(--ink-soft);border-radius:4px;cursor:pointer}
+  .lib-card .del:hover,.lib-card .del:active{color:var(--bad);background:#fde2e6}
   #sidebarMonth .sec{padding:8px 10px}
 
   /* month-grid: tighter weeks */

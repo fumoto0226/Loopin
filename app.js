@@ -2179,8 +2179,15 @@ function renderLibraryInMonthSidebar(){
       <div class="swatch"></div>
       <div class="meta"><div class="name">${escapeHtml(t.name)}</div><div class="rule">${t.type==='min'?'至少':'最多'} ${t.target} 次/周</div></div>
       <button class="edit" title="编辑">✎</button>
+      <button class="del" title="删除">×</button>
     `;
     el.querySelector('.edit').onclick = (e)=>{ e.stopPropagation(); editLibrary(t.id) };
+    el.querySelector('.del').onclick = async (e) => {
+      e.stopPropagation();
+      if(!await window.appConfirm(`从习惯库删除「${t.name}」？已加到各周的习惯不受影响。`, { danger: true, okText: '删除' })) return;
+      state.library = state.library.filter(x => x.id !== t.id);
+      save(); renderLibraryInMonthSidebar(); renderLibrary();
+    };
     el.addEventListener('dragstart', e=>{
       e.dataTransfer.effectAllowed='copy';
       e.dataTransfer.setData('application/x-loopin-lib', JSON.stringify({id:t.id}));
@@ -2589,6 +2596,83 @@ function attachMouseDragScroll(container, orient){
 }
 
 window.LoopinMobile = { isMobile, openDayPicker, openWeekPicker, bindMobileTap, attachMouseDragScroll };
+
+// Month-view library: drag handle to resize sidebar height on mobile.
+(function bindMonthSidebarResize(){
+  const handle = document.getElementById('monthSidebarResize');
+  const sb = document.getElementById('sidebarMonth');
+  if(!handle || !sb) return;
+  const LS_KEY = 'loopin_month_sb_h';
+  let startY = 0, startH = 0, active = false;
+
+  function clamp(h){
+    const min = 120;
+    const max = Math.round(window.innerHeight * 0.85);
+    return Math.max(min, Math.min(max, h));
+  }
+  function applyHeight(h){
+    const v = clamp(h);
+    sb.style.height = v + 'px';
+  }
+  function restore(){
+    if(window.innerWidth > 820) return;
+    const saved = parseInt(localStorage.getItem(LS_KEY) || '', 10);
+    if(saved > 0) applyHeight(saved);
+  }
+  function onStart(y){
+    if(window.innerWidth > 820) return false;
+    active = true;
+    startY = y;
+    startH = sb.getBoundingClientRect().height;
+    sb.classList.add('resizing');
+    document.body.style.userSelect = 'none';
+    return true;
+  }
+  function onMove(y){
+    if(!active) return;
+    const dy = startY - y; // dragging up increases height
+    applyHeight(startH + dy);
+  }
+  function onEnd(){
+    if(!active) return;
+    active = false;
+    sb.classList.remove('resizing');
+    document.body.style.userSelect = '';
+    const h = parseInt(sb.style.height, 10);
+    if(h > 0) localStorage.setItem(LS_KEY, String(h));
+  }
+
+  handle.addEventListener('touchstart', (e) => {
+    if(e.touches.length !== 1) return;
+    onStart(e.touches[0].clientY);
+  }, { passive: true });
+  handle.addEventListener('touchmove', (e) => {
+    if(!active || e.touches.length !== 1) return;
+    onMove(e.touches[0].clientY);
+    e.preventDefault();
+  }, { passive: false });
+  handle.addEventListener('touchend', onEnd);
+  handle.addEventListener('touchcancel', onEnd);
+
+  handle.addEventListener('mousedown', (e) => {
+    if(!onStart(e.clientY)) return;
+    e.preventDefault();
+    const mm = (ev) => onMove(ev.clientY);
+    const mu = () => {
+      onEnd();
+      document.removeEventListener('mousemove', mm);
+      document.removeEventListener('mouseup', mu);
+    };
+    document.addEventListener('mousemove', mm);
+    document.addEventListener('mouseup', mu);
+  });
+
+  restore();
+  window.addEventListener('resize', () => {
+    if(window.innerWidth > 820) sb.style.height = '';
+    else restore();
+  });
+})();
 
 // Week-habit bottom sheet (mobile): collapsed = strip + me-bar; expanded covers ~half the calendar.
 (function bindWeekStripToggle(){
