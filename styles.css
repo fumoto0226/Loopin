@@ -113,7 +113,7 @@ body{display:flex;flex-direction:column}
 .divider-remove:hover{border-color:#f0a3ad;background:#fff6f7}
 .divider-remove:hover::after{background:var(--bad)}
 .calendar.dragging .divider-line, .calendar.dragging .divider-remove{pointer-events:none}
-.calendar{flex:1;display:grid;grid-template-columns:repeat(7, minmax(0,1fr));min-height:0;position:relative}
+.calendar{flex:1;display:grid;grid-template-columns:repeat(7, minmax(0,1fr));min-height:0;height:100%;position:relative}
 .guide-line{position:absolute;left:0;right:0;height:0;border-top:1px dashed #9aa0b3;pointer-events:none;z-index:5;transition:top .12s ease}
 .guide-line.hidden{display:none}
 .divider-snap-line{border-top-color:#7c5cff;opacity:.9}
@@ -518,12 +518,12 @@ html.auth-pending #loginOverlay{display:none}
   .me-email{display:none}
 
   /* === Calendar: all 7 days fit on screen, very compact blocks === */
-  .calendar{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));overflow:hidden}
-  .calendar .day{min-width:0;max-width:none;flex:initial}
+  .calendar{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));height:100%;overflow:hidden}
+  .calendar .day{min-width:0;max-width:none;height:100%;flex:initial}
   .calendar .day .head{padding:6px 2px}
   .calendar .day .head .dow{font-size:10px}
   .calendar .day .head .date{font-size:11px}
-  .calendar .day .body{padding:4px 2px}
+  .calendar .day .body{padding:4px 2px;overflow:hidden}
   .calendar .block{padding:2px 2px;border-radius:7px;min-height:30px;display:flex;align-items:center;justify-content:center}
   .calendar .block .row1{flex-direction:column;gap:0;width:100%;justify-content:center;align-items:center}
   .calendar .block .title{display:block;font-size:9px;line-height:1.1;font-weight:600;text-align:center;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:0 1px}

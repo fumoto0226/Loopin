@@ -357,6 +357,8 @@ const DIVIDER_SNAP_THRESHOLD = 10;
 const DIVIDER_MIN_SPAN = DIVIDER_CLEAR * 2 + 1;
 let dragGrabY = 16; // pixels from top of source block where user grabbed
 let ph = null;
+let mobileBlockDrag = null;
+let suppressBlockClickUntil = 0;
 function ensurePh(){ if(!ph){ ph = document.createElement('div'); ph.className='ph' } return ph }
 function computeY(body, clientY){
   const r = body.getBoundingClientRect();
@@ -372,6 +374,156 @@ function positionPh(body, y){
   if(ph.parentElement !== body) body.appendChild(ph);
 }
 function removePh(){ if(ph && ph.parentElement) ph.parentElement.removeChild(ph) }
+function isMobileWeekLayout(){
+  return !!(window.LoopinMobile && window.LoopinMobile.isMobile());
+}
+function setBodyExtent(body, maxBottom){
+  if(!body) return;
+  if(isMobileWeekLayout()){
+    body.style.minHeight = '';
+    return;
+  }
+  body.style.minHeight = (maxBottom + BODY_PAD) + 'px';
+}
+function findCalendarBodyAtPoint(clientX, clientY){
+  const hitList = (document.elementsFromPoint && document.elementsFromPoint(clientX, clientY)) || [];
+  for(const node of hitList){
+    const body = node?.closest?.('.calendar .day .body');
+    if(body) return body;
+  }
+  const fallback = document.querySelectorAll('.calendar .day .body');
+  let best = null;
+  let bestDx = Infinity;
+  fallback.forEach(body => {
+    const rect = body.getBoundingClientRect();
+    const dx = clientX < rect.left ? rect.left - clientX : clientX > rect.right ? clientX - rect.right : 0;
+    if(dx < bestDx){
+      bestDx = dx;
+      best = body;
+    }
+  });
+  return best;
+}
+function finishMobileBlockDrag(cancelled){
+  const session = mobileBlockDrag;
+  if(!session) return;
+  clearTimeout(session.timer);
+  if(session.started){
+    const el = session.el;
+    const dstBody = session.lastBody || document.querySelector(`.calendar .day .body[data-day="${session.dayIdx}"]`);
+    const dstDay = session.lastDayIdx != null ? session.lastDayIdx : session.dayIdx;
+    if(!cancelled && dstBody){
+      const computed = dragSession.lastComputed || {};
+      const finalY = (dragSession.lastDraggedY != null)
+        ? dragSession.lastDraggedY
+        : Math.max(BODY_PAD, session.origY);
+      placeAndCommitMap({kind:'move', blockId:session.blockId, srcDay:session.dayIdx}, dstDay, finalY, computed);
+      suppressBlockClickUntil = Date.now() + 500;
+      hideGuideLine();
+      hideStickIndicator();
+      hideDividerSnapLine();
+      removePh();
+      clearDragPreviewState();
+      document.getElementById('calendar')?.classList.remove('dragging');
+    } else {
+      document.getElementById('calendar')?.classList.remove('dragging');
+      hideGuideLine();
+      hideStickIndicator();
+      hideDividerSnapLine();
+      if(el) el.classList.remove('dragging');
+      removePh();
+      const srcBody = document.querySelector(`.calendar .day .body[data-day="${session.dayIdx}"]`);
+      if(srcBody) resolveOverlapsForBody(srcBody, session.dayIdx);
+      resetDragSession();
+      clearDragPreviewState();
+    }
+  }
+  mobileBlockDrag = null;
+}
+function bindMobileBlockDrag(el, block, dayIdx){
+  if(!isMobileWeekLayout()) return;
+  const LONG_PRESS_MS = 240;
+  const MOVE_CANCEL_PX = 8;
+  let startX = 0;
+  let startY = 0;
+
+  const startDrag = () => {
+    if(!mobileBlockDrag) return;
+    const touch = mobileBlockDrag.lastTouch;
+    if(!touch) return;
+    clearSelection();
+    const rect = el.getBoundingClientRect();
+    dragGrabY = Math.max(0, touch.clientY - rect.top);
+    currentDragPayload = {kind:'move', blockId:block.id, srcDay:dayIdx};
+    currentDragHeight = el.offsetHeight;
+    committedDropThisDrag = false;
+    resetDragSession();
+    mobileBlockDrag.started = true;
+    mobileBlockDrag.origY = block.y || BODY_PAD;
+    el.classList.add('dragging');
+    document.getElementById('calendar')?.classList.add('dragging');
+    const body = findCalendarBodyAtPoint(touch.clientX, touch.clientY) || el.closest('.body');
+    if(body){
+      mobileBlockDrag.lastBody = body;
+      mobileBlockDrag.lastDayIdx = Number(body.dataset.day);
+      previewLayout(body, mobileBlockDrag.lastDayIdx, touch.clientY);
+    }
+  };
+
+  el.addEventListener('touchstart', (e) => {
+    if(!isMobileWeekLayout()) return;
+    if(e.touches.length !== 1) return;
+    if(e.target.closest('.av') || e.target.closest('.edit') || e.target.closest('.x')) return;
+    const touch = e.touches[0];
+    startX = touch.clientX;
+    startY = touch.clientY;
+    mobileBlockDrag = {
+      blockId: block.id,
+      dayIdx,
+      el,
+      started: false,
+      lastTouch: {clientX: touch.clientX, clientY: touch.clientY},
+      timer: setTimeout(startDrag, LONG_PRESS_MS),
+      origY: block.y || BODY_PAD,
+      lastBody: null,
+      lastDayIdx: null
+    };
+  }, { passive: true });
+
+  el.addEventListener('touchmove', (e) => {
+    if(!mobileBlockDrag || mobileBlockDrag.blockId !== block.id) return;
+    if(e.touches.length !== 1){
+      finishMobileBlockDrag(true);
+      return;
+    }
+    const touch = e.touches[0];
+    mobileBlockDrag.lastTouch = {clientX: touch.clientX, clientY: touch.clientY};
+    if(!mobileBlockDrag.started){
+      if(Math.abs(touch.clientX - startX) > MOVE_CANCEL_PX || Math.abs(touch.clientY - startY) > MOVE_CANCEL_PX){
+        clearTimeout(mobileBlockDrag.timer);
+        mobileBlockDrag = null;
+      }
+      return;
+    }
+    e.preventDefault();
+    const body = findCalendarBodyAtPoint(touch.clientX, touch.clientY);
+    if(!body) return;
+    mobileBlockDrag.lastBody = body;
+    mobileBlockDrag.lastDayIdx = Number(body.dataset.day);
+    previewLayout(body, mobileBlockDrag.lastDayIdx, touch.clientY);
+  }, { passive: false });
+
+  el.addEventListener('touchend', (e) => {
+    if(!mobileBlockDrag || mobileBlockDrag.blockId !== block.id) return;
+    if(mobileBlockDrag.started) e.preventDefault();
+    finishMobileBlockDrag(false);
+  }, { passive: false });
+
+  el.addEventListener('touchcancel', () => {
+    if(!mobileBlockDrag || mobileBlockDrag.blockId !== block.id) return;
+    finishMobileBlockDrag(true);
+  });
+}
 
 function getSortedDividers(wk, excludeId){
   return (wk?.dividers || [])
@@ -465,7 +617,7 @@ function resolveOverlapsForBody(body, dayIdx){
     el.style.top = newY + 'px';
     maxBottom = Math.max(maxBottom, newY + h);
   }
-  body.style.minHeight = (maxBottom + BODY_PAD) + 'px';
+  setBodyExtent(body, maxBottom);
   return changed;
 }
 
@@ -1128,7 +1280,7 @@ function previewLayoutMulti(cursorBody, cursorDayIdx, cursorY){
     let maxBot = 0;
     for(const g of ghosts) maxBot = Math.max(maxBot, g.y + g.h);
     for(const o of others) maxBot = Math.max(maxBot, pos[o.id] + o.h);
-    colBody.style.minHeight = (maxBot + BODY_PAD) + 'px';
+    setBodyExtent(colBody, maxBot);
   }
 
   if(bestKind === 'snap' && bestSnapLine != null){
@@ -1218,7 +1370,7 @@ function previewLayout(body, dayIdx, cursorY){
   }
   let maxBot = draggedY + draggedH;
   for(const b of blocks) maxBot = Math.max(maxBot, pos[b.id] + b.h);
-  body.style.minHeight = (maxBot + BODY_PAD) + 'px';
+  setBodyExtent(body, maxBot);
 
   if(stickEdgeY != null){
     showStickIndicator(body, stickEdgeY);
@@ -1724,6 +1876,8 @@ function getCalendarBodyOffset(){
   return Math.max(0, bodyRect.top - calRect.top);
 }
 function getDividerMaxY(){
+  const firstBody = document.querySelector('.calendar .day .body');
+  if(firstBody) return Math.max(0, firstBody.clientHeight - 1);
   const cal = document.getElementById('calendar');
   if(!cal) return 0;
   return Math.max(0, cal.clientHeight - getCalendarBodyOffset() - 1);
@@ -1995,7 +2149,7 @@ function getHabit(wk, hid){ return wk.habits.find(h=>h.id===hid) || {name:'(å·²å
 function renderBlock(b, dayIdx, wk){
   const h=getHabit(wk, b.habitId);
   const person=state.people.find(p=>p.uid===b.participantId);
-  const el=document.createElement('div'); el.className='block t-'+h.type; el.draggable=true;
+  const el=document.createElement('div'); el.className='block t-'+h.type; el.draggable=!isMobileWeekLayout();
   el.dataset.bid = b.id;
   el.style.top = ((b.y!=null) ? b.y : BODY_PAD) + 'px';
   const avHtml = person
@@ -2060,11 +2214,17 @@ function renderBlock(b, dayIdx, wk){
     else showPersonPopover(el.querySelector('.av'), b);
   };
   el.addEventListener('click', (e) => {
+    if (Date.now() < suppressBlockClickUntil) {
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
     if (window.innerWidth > 820) return;
     if (e.target.closest('.av') || e.target.closest('.edit') || e.target.closest('.x')) return;
     e.stopPropagation();
     showBlockActionsPopover(el, b, dayIdx, wk, h);
   });
+  bindMobileBlockDrag(el, b, dayIdx);
   return el;
 }
 
