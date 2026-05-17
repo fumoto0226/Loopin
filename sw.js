@@ -1,4 +1,4 @@
-const CACHE = 'loopin-v10';
+const CACHE = 'loopin-v11';
 const ASSETS = [
   './',
   './index.html',

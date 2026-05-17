@@ -157,6 +157,10 @@ function _yToSegmentedGlobalFrac(y, canvasH, sortedDivYs, sortedDivFracs){
 }
 
 function _syncFracsForSave(){
+  // LINEAR: b.frac = b.y / canvasH for everything. This is exactly invertible with the
+  // linear hydration (`b.y = b.frac * canvasH`) so save↔load is identity — no 6px
+  // per-cycle drift that the segmented math used to introduce. Block segment membership
+  // is purely derived from `b.frac` vs `divider.frac` at render time.
   const sampleBody = document.querySelector('.calendar .day .body');
   const canvasH = (sampleBody && sampleBody.clientHeight > 50) ? sampleBody.clientHeight
                   : (parseFloat(localStorage.getItem('loopin_canvas_h')) || 800);
@@ -167,13 +171,10 @@ function _syncFracsForSave(){
     if(typeof d.y !== 'number') return;
     d.frac = Math.max(0, Math.min(0.99, d.y / canvasH));
   });
-  const sortedDividers = getSortedDividers(wk);
-  const sortedDivYs = sortedDividers.map(d => clampDividerY(d.y));
-  const sortedDivFracs = sortedDividers.map(d => d.frac);
   Object.values(wk.days || {}).forEach(arr => {
     (arr || []).forEach(b => {
       if(typeof b.y !== 'number') return;
-      b.frac = _yToSegmentedGlobalFrac(b.y, canvasH, sortedDivYs, sortedDivFracs);
+      b.frac = Math.max(0, Math.min(0.99, b.y / canvasH));
     });
   });
 }
@@ -659,10 +660,12 @@ function hydrateWeekLayoutFromFractions(canvasH){
   const sortedDivFracs = getSortedDividers(wk)
     .map(d => (typeof d.frac === 'number' ? d.frac : null))
     .filter(f => f != null);
+  // LINEAR: y = frac * canvasH. Matches the linear save formula exactly so save↔load
+  // is identity, no drift across cycles.
   Object.values(wk.days || {}).forEach(arr => {
     (arr || []).forEach(b => {
       if(typeof b.frac !== 'number') return;
-      b.y = segmentedFracToY(b.frac, canvasH, sortedDivFracs);
+      b.y = b.frac * canvasH;
     });
   });
   return sortedDivFracs;
