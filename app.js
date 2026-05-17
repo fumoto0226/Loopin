@@ -157,21 +157,23 @@ function _yToSegmentedGlobalFrac(y, canvasH, sortedDivYs, sortedDivFracs){
 }
 
 function _syncFracsForSave(){
-  // SIMPLE: linear frac = y / canvasH for everything. This is exactly invertible with the
-  // render math (b.y = b.frac * canvasH) so positions don't drift across save / load.
-  // Cross-device behaviour: same b.frac on any canvasH renders at the same fractional
-  // position. A block whose b.frac > divider.frac is always visually below the divider.
   const sampleBody = document.querySelector('.calendar .day .body');
   const canvasH = (sampleBody && sampleBody.clientHeight > 50) ? sampleBody.clientHeight
                   : (parseFloat(localStorage.getItem('loopin_canvas_h')) || 800);
   if(canvasH <= 0) return;
   const wk = state.weeks[currentWeek];
   if(!wk) return;
-  (wk.dividers || []).forEach(d => { if(typeof d.y === 'number') d.frac = Math.max(0, Math.min(0.99, d.y / canvasH)); });
+  (wk.dividers || []).forEach(d => {
+    if(typeof d.y !== 'number') return;
+    d.frac = Math.max(0, Math.min(0.99, d.y / canvasH));
+  });
+  const sortedDividers = getSortedDividers(wk);
+  const sortedDivYs = sortedDividers.map(d => clampDividerY(d.y));
+  const sortedDivFracs = sortedDividers.map(d => d.frac);
   Object.values(wk.days || {}).forEach(arr => {
     (arr || []).forEach(b => {
       if(typeof b.y !== 'number') return;
-      b.frac = Math.max(0, Math.min(0.99, b.y / canvasH));
+      b.frac = _yToSegmentedGlobalFrac(b.y, canvasH, sortedDivYs, sortedDivFracs);
     });
   });
 }
@@ -467,31 +469,6 @@ function resolveOverlapsForBody(body, dayIdx){
   return changed;
 }
 
-// Map a saved fraction to a display Y, treating each region between dividers as an
-// independent mini-calendar. A block's `frac` is relative to the whole body, but on render
-// we re-project it inside its own segment so "just below the divider" never displays at
-// "half the cell" when the cell is short (mobile). Blocks above the divider stay above;
-// blocks below the divider stay below.
-function segmentedFracToY(blockFrac, canvasH, sortedDivFracs){
-  if(!sortedDivFracs || sortedDivFracs.length === 0){
-    return blockFrac * canvasH;
-  }
-  let segStart = 0, segEnd = 1;
-  for(let i = 0; i < sortedDivFracs.length; i++){
-    if(blockFrac < sortedDivFracs[i]){
-      segEnd = sortedDivFracs[i];
-      break;
-    }
-    segStart = sortedDivFracs[i];
-    segEnd = (i + 1 < sortedDivFracs.length) ? sortedDivFracs[i+1] : 1;
-  }
-  const segLen = Math.max(0.0001, segEnd - segStart);
-  const relFrac = (blockFrac - segStart) / segLen;
-  const segStartY = segStart * canvasH + (segStart > 0 ? DIVIDER_CLEAR : 0);
-  const segEndY = segEnd * canvasH - (segEnd < 1 ? DIVIDER_CLEAR : 0);
-  return Math.max(BODY_PAD, segStartY + relFrac * Math.max(0, segEndY - segStartY));
-}
-
 // Map a saved global frac to a y value using SEGMENTED math — each region between
 // dividers is its own independent coordinate space. Blocks below the divider are
 // positioned relative to the divider; their visual gap from the divider scales with
@@ -517,21 +494,26 @@ function segmentedFracToY(blockFrac, canvasH, sortedDivFracs){
   // 6px buffer enforces "blocks belong to a segment, not to the body as a whole".
   const segStartY = segStart * canvasH + (segStart > 0 ? DIVIDER_CLEAR : 0);
   const segEndY = segEnd * canvasH - (segEnd < 1 ? DIVIDER_CLEAR : 0);
-  return Math.max(0, segStartY + relFrac * Math.max(0, segEndY - segStartY));
+  return Math.max(BODY_PAD, segStartY + relFrac * Math.max(0, segEndY - segStartY));
 }
 
-function renderBlocksRaw(body, dayIdx, canvasH){
+function hydrateWeekLayoutFromFractions(canvasH){
   const wk = state.weeks[currentWeek]; if(!wk) return;
-  const arr = wk.days[dayIdx] || [];
-  body.style.minHeight = '';
-  arr.forEach(b => {
-    const el = body.querySelector(`[data-bid="${b.id}"]`);
-    if(!el) return;
-    // Linear: same math as desktop. b.y = b.frac * canvasH. Round-trips with save exactly.
-    const y = (typeof b.frac === 'number') ? (b.frac * canvasH)
-            : (typeof b.y === 'number') ? b.y : BODY_PAD;
-    el.style.top = y + 'px';
+  if(canvasH <= 0) return;
+  (wk.dividers || []).forEach(d => {
+    if(typeof d.frac !== 'number') return;
+    d.y = d.frac * canvasH;
   });
+  const sortedDivFracs = getSortedDividers(wk)
+    .map(d => (typeof d.frac === 'number' ? d.frac : null))
+    .filter(f => f != null);
+  Object.values(wk.days || {}).forEach(arr => {
+    (arr || []).forEach(b => {
+      if(typeof b.frac !== 'number') return;
+      b.y = segmentedFracToY(b.frac, canvasH, sortedDivFracs);
+    });
+  });
+  return sortedDivFracs;
 }
 
 // Re-place divider lines using the same fresh canvasH that blocks see — divider position
@@ -556,6 +538,8 @@ function _ensureCalResizeObserver(){
   let _lastH = 0;
   _calResizeObserver = new ResizeObserver(entries => {
     if(!window.LoopinMobile || !window.LoopinMobile.isMobile()) return;
+    if(currentDragPayload || dividerDrag) return;
+    if(document.getElementById('calendar')?.classList.contains('dragging')) return;
     // Debounce on changed height only — ignore sub-pixel jitter and width-only changes.
     const h = entries[0]?.contentRect?.height || 0;
     if(Math.abs(h - _lastH) < 1) return;
@@ -580,14 +564,15 @@ function resolveAllOverlaps(){
   const isMobile = window.LoopinMobile && window.LoopinMobile.isMobile();
   const bodies = document.querySelectorAll('.calendar .day .body');
   if(isMobile){
-    // Mobile: render blocks per-segment so dividers act as boundaries between independent
-    // mini-calendars. canvasH is read from the LIVE body via getBoundingClientRect (forces
-    // layout) so we never get a stale early measurement. No state mutation, no save().
+    // Mobile: re-project every block inside its divider segment, then enforce the minimum
+    // gap inside each segment. This keeps the divider acting as a true boundary instead of
+    // a decorative line when the phone's calendar body is shorter than desktop.
     const sampleBody = bodies[0];
     const canvasH = sampleBody ? sampleBody.getBoundingClientRect().height : 0;
     if(canvasH > 50){
-      bodies.forEach((body, i) => renderBlocksRaw(body, i, canvasH));
+      hydrateWeekLayoutFromFractions(canvasH);
       repositionDividersRaw(canvasH);
+      bodies.forEach((body, i) => resolveOverlapsForBody(body, i));
     }
     _watchBodyResize();
     return;
@@ -1666,23 +1651,7 @@ function renderCalendar(){
         d.frac = Math.max(0, Math.min(0.99, d.y / migrationRefH));
       }
     });
-    // Hydrate dividers: linear, they ARE the segment boundaries.
-    (wk.dividers || []).forEach(d => { if(typeof d.frac === 'number') d.y = d.frac * canvasH; });
-    const sortedDivYsHy = (wk.dividers || [])
-      .map(d => (typeof d.y === 'number' ? d.y : null))
-      .filter(v => v != null)
-      .sort((a, b) => a - b);
-    const sortedDivFracsHy = (wk.dividers || [])
-      .map(d => (typeof d.frac === 'number' ? d.frac : null))
-      .filter(f => f != null)
-      .sort((a, b) => a - b);
-    // SIMPLE LINEAR: y = frac * canvasH for everything. Exactly invertible with save.
-    Object.values(wk.days || {}).forEach(arr => {
-      (arr || []).forEach(b => {
-        if(typeof b.frac !== 'number') return;
-        b.y = b.frac * canvasH;
-      });
-    });
+    hydrateWeekLayoutFromFractions(canvasH);
   }
 
   // PASS 2: Wire each body's drag handlers and append blocks.
