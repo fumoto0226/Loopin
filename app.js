@@ -35,6 +35,9 @@ function _migrateState(s){
             const nb = {id: i===0 ? (b.id||Math.random().toString(36).slice(2,9)) : Math.random().toString(36).slice(2,9), habitId:b.habitId, participantId:b.participantId||null, note:b.note||''};
             if(typeof b.y === 'number') nb.y = b.y;
             else if(typeof b.slot === 'number') nb.y = b.slot * 40 + 8;
+            if(typeof b.frac === 'number') nb.frac = b.frac;
+            if(Number.isInteger(b.seg)) nb.seg = b.seg;
+            if(typeof b.segOffset === 'number') nb.segOffset = b.segOffset;
             expanded.push(nb);
           }
         });
@@ -157,10 +160,15 @@ function _yToSegmentedGlobalFrac(y, canvasH, sortedDivYs, sortedDivFracs){
 }
 
 function _syncFracsForSave(){
-  // LINEAR: b.frac = b.y / canvasH for everything. This is exactly invertible with the
-  // linear hydration (`b.y = b.frac * canvasH`) so save↔load is identity — no 6px
-  // per-cycle drift that the segmented math used to introduce. Block segment membership
-  // is purely derived from `b.frac` vs `divider.frac` at render time.
+  // CRITICAL: on mobile we do NOTHING. The mobile body's clientHeight is inflated by the
+  // minHeight that renderMobileTightLayout sets to make tight stacking visible — that
+  // inflated value doesn't match the canvasH used at hydration time. Recomputing any frac
+  // from y/canvasH on mobile would silently drift the divider's frac (sometimes pushing
+  // it past 1, which makes ALL blocks appear above the divider on desktop next render).
+  // Mobile changes block frac/seg ONLY via `moveBlockTo` and `_appendBlockToDay`, which
+  // both write explicit values — no derivation needed.
+  const isMobile = window.LoopinMobile && window.LoopinMobile.isMobile();
+  if(isMobile) return;
   const sampleBody = document.querySelector('.calendar .day .body');
   const canvasH = (sampleBody && sampleBody.clientHeight > 50) ? sampleBody.clientHeight
                   : (parseFloat(localStorage.getItem('loopin_canvas_h')) || 800);
@@ -171,10 +179,21 @@ function _syncFracsForSave(){
     if(typeof d.y !== 'number') return;
     d.frac = Math.max(0, Math.min(0.99, d.y / canvasH));
   });
+  // Desktop only: update each block's canonical frac from its current visual y using the
+  // same segmented geometry that render uses. This keeps save/load invertible across
+  // divider boundaries, so a block dragged below a divider stays below it after reload.
+  const sortedDividers = getSortedDividers(wk);
+  const sortedDivYs = sortedDividers
+    .map(d => (typeof d.y === 'number' ? clampDividerY(d.y) : null))
+    .filter(v => v != null);
+  const sortedDivFracs = sortedDividers
+    .map(d => (typeof d.frac === 'number' ? d.frac : null))
+    .filter(v => v != null);
   Object.values(wk.days || {}).forEach(arr => {
     (arr || []).forEach(b => {
       if(typeof b.y !== 'number') return;
-      b.frac = Math.max(0, Math.min(0.99, b.y / canvasH));
+      b.frac = _yToSegmentedGlobalFrac(b.y, canvasH, sortedDivYs, sortedDivFracs);
+      b.seg = _segFromFrac(b.frac, sortedDivFracs);
     });
   });
 }
@@ -442,6 +461,13 @@ function finishMobileBlockDrag(cancelled){
   mobileBlockDrag = null;
 }
 function bindMobileBlockDrag(el, block, dayIdx){
+  // Mobile drag-to-position is intentionally DISABLED. Mobile blocks live in a tight
+  // list layout — there is no "free position" semantic on phone. To move a block, the
+  // user opens the block-actions popover (single tap) and uses the "移动" option which
+  // routes through day picker → segment picker.
+  return;
+
+  // eslint-disable-next-line no-unreachable
   if(!isMobileWeekLayout()) return;
   const LONG_PRESS_MS = 240;
   const MOVE_CANCEL_PX = 8;
@@ -653,6 +679,18 @@ function segmentedFracToY(blockFrac, canvasH, sortedDivFracs){
 function hydrateWeekLayoutFromFractions(canvasH){
   const wk = state.weeks[currentWeek]; if(!wk) return;
   if(canvasH <= 0) return;
+  // CRITICAL: on mobile, do NOT mutate state's b.y or d.y. Mobile rendering goes through
+  // renderMobileTightLayout which uses b.frac/b.seg directly and computes its own divider
+  // positions. If we mutated b.y here, then scheduleSave would persist those mobile-pixel
+  // y values to Firestore, polluting desktop's view of "block positions". By keeping
+  // state byte-for-byte identical to what came from Firestore, mobile-only sessions can
+  // only modify the specific block they're explicitly editing.
+  const isMobile = window.LoopinMobile && window.LoopinMobile.isMobile();
+  if(isMobile){
+    return getSortedDividers(wk)
+      .map(d => (typeof d.frac === 'number' ? d.frac : null))
+      .filter(f => f != null);
+  }
   (wk.dividers || []).forEach(d => {
     if(typeof d.frac !== 'number') return;
     d.y = d.frac * canvasH;
@@ -660,12 +698,10 @@ function hydrateWeekLayoutFromFractions(canvasH){
   const sortedDivFracs = getSortedDividers(wk)
     .map(d => (typeof d.frac === 'number' ? d.frac : null))
     .filter(f => f != null);
-  // LINEAR: y = frac * canvasH. Matches the linear save formula exactly so save↔load
-  // is identity, no drift across cycles.
   Object.values(wk.days || {}).forEach(arr => {
     (arr || []).forEach(b => {
       if(typeof b.frac !== 'number') return;
-      b.y = b.frac * canvasH;
+      b.y = segmentedFracToY(b.frac, canvasH, sortedDivFracs);
     });
   });
   return sortedDivFracs;
@@ -715,20 +751,109 @@ function _watchBodyResize(){
   obs.observe(sampleBody);
 }
 
+// Mobile-only: render each day as a tight, segmented LIST. Block stacking is per-day
+// (top-down, BLOCK_GAP between blocks), but the DIVIDER is a single horizontal line
+// spanning all 7 columns at the y where the LONGEST upper-segment among all days ends.
+// Days with fewer upper blocks have empty space below their last block up to the divider;
+// the lower segment always starts just below the global divider line in every day.
+function renderMobileTightLayout(){
+  const wk = state.weeks[currentWeek]; if(!wk) return;
+  const bodies = document.querySelectorAll('.calendar .day .body');
+  if(bodies.length === 0) return;
+  const cal = document.getElementById('calendar');
+  const sortedDividers = (wk.dividers || []).slice().sort((a, b) => (a.frac || 0) - (b.frac || 0));
+  const sortedDivFracs = sortedDividers.map(d => d.frac || 0);
+  const numSegs = sortedDividers.length + 1;
+  // Visual breathing room. Above the divider: 22px (gives upper segment a tail). Below
+  // the divider: BLOCK_GAP — same as between any two stacked blocks, so the divider
+  // visually behaves like a "block" sitting between segments.
+  const DIVIDER_PAD_TOP = 22;
+  const DIVIDER_PAD_BOTTOM = BLOCK_GAP;
+
+  // Plan per day: group blocks by seg, sort by frac (matches desktop visual order).
+  const perDay = [];
+  for(let dayIdx = 0; dayIdx < 7; dayIdx++){
+    const body = bodies[dayIdx];
+    const arr = wk.days[dayIdx] || [];
+    const segGroups = Array.from({length: numSegs}, () => []);
+    arr.forEach(b => {
+      // Always derive segment from b.frac vs current dividers — stored b.seg may be stale.
+      const segVal = _segFromFrac(b.frac || 0, sortedDivFracs);
+      segGroups[segVal].push(b);
+    });
+    segGroups.forEach(g => g.sort((a, b) => (a.frac || 0) - (b.frac || 0)));
+    perDay.push({ body, segGroups });
+  }
+
+  // For each segment boundary (divider), compute the GLOBAL y at which the divider line
+  // should sit: max across all 7 days of "where this day's segment N naturally ends".
+  // Each day's segment N starts at (previous divider's y) + 1 line + DIVIDER_PAD_BOTTOM,
+  // or BODY_PAD for the first segment.
+  const globalDividerYs = [];
+  for(let segIdx = 0; segIdx < numSegs - 1; segIdx++){
+    const segStart = segIdx === 0
+      ? BODY_PAD
+      : (globalDividerYs[segIdx - 1] + 1 + DIVIDER_PAD_BOTTOM);
+    let maxEnd = segStart;
+    for(let dayIdx = 0; dayIdx < 7; dayIdx++){
+      const group = perDay[dayIdx].segGroups[segIdx];
+      if(group.length === 0) continue;
+      let y = segStart;
+      for(let i = 0; i < group.length; i++){
+        const b = group[i];
+        const el = perDay[dayIdx].body.querySelector(`[data-bid="${b.id}"]`);
+        const blockH = el?.offsetHeight || 30;
+        y += blockH;
+        if(i < group.length - 1) y += BLOCK_GAP;
+      }
+      if(y > maxEnd) maxEnd = y;
+    }
+    globalDividerYs.push(maxEnd + DIVIDER_PAD_TOP);
+  }
+
+  // Render: each day's segment N starts at (segIdx === 0 ? BODY_PAD : prevDividerY + 1 + DIVIDER_PAD_BOTTOM).
+  for(let dayIdx = 0; dayIdx < 7; dayIdx++){
+    const { body, segGroups } = perDay[dayIdx];
+    body.querySelectorAll('.mobile-seg-divider').forEach(el => el.remove());
+    let bodyMax = BODY_PAD;
+    for(let segIdx = 0; segIdx < numSegs; segIdx++){
+      const segStart = segIdx === 0 ? BODY_PAD : (globalDividerYs[segIdx - 1] + 1 + DIVIDER_PAD_BOTTOM);
+      let cursor = segStart;
+      const group = segGroups[segIdx];
+      for(let i = 0; i < group.length; i++){
+        const b = group[i];
+        const el = body.querySelector(`[data-bid="${b.id}"]`);
+        if(!el) continue;
+        el.style.top = cursor + 'px';
+        cursor += (el.offsetHeight || 30);
+        if(i < group.length - 1) cursor += BLOCK_GAP;
+      }
+      if(cursor > bodyMax) bodyMax = cursor;
+    }
+    body.style.minHeight = (bodyMax + BODY_PAD) + 'px';
+  }
+
+  // Render ONE global divider line per divider, spanning all 7 columns, inside .calendar.
+  if(cal){
+    cal.querySelectorAll('.mobile-global-divider').forEach(el => el.remove());
+    const bodyOffset = getCalendarBodyOffset();
+    for(let i = 0; i < globalDividerYs.length; i++){
+      const lineEl = document.createElement('div');
+      lineEl.className = 'mobile-global-divider';
+      if(sortedDividers[i]?.id) lineEl.dataset.dividerId = sortedDividers[i].id;
+      lineEl.style.top = (bodyOffset + globalDividerYs[i]) + 'px';
+      cal.appendChild(lineEl);
+    }
+  }
+}
+
 function resolveAllOverlaps(){
   const isMobile = window.LoopinMobile && window.LoopinMobile.isMobile();
   const bodies = document.querySelectorAll('.calendar .day .body');
   if(isMobile){
-    // Mobile: re-project every block inside its divider segment, then enforce the minimum
-    // gap inside each segment. This keeps the divider acting as a true boundary instead of
-    // a decorative line when the phone's calendar body is shorter than desktop.
-    const sampleBody = bodies[0];
-    const canvasH = sampleBody ? sampleBody.getBoundingClientRect().height : 0;
-    if(canvasH > 50){
-      hydrateWeekLayoutFromFractions(canvasH);
-      repositionDividersRaw(canvasH);
-      bodies.forEach((body, i) => resolveOverlapsForBody(body, i));
-    }
+    // Mobile path: tight list layout per segment, per-day dividers. No b.frac/b.y
+    // dependency on canvasH — purely list-based stacking.
+    renderMobileTightLayout();
     _watchBodyResize();
     return;
   }
@@ -2263,6 +2388,12 @@ function showBlockActionsPopover(anchor, block, dayIdx, wk, h){
     setTimeout(() => fakeAnchor.remove(), 100);
   }));
   pop.appendChild(mkRow(block.note ? '编辑备注' : '添加备注', 'action', () => editBlockNote(block)));
+  // Mobile-only: "移动到其他位置" routes through day → segment picker. Replaces free drag.
+  if(window.LoopinMobile && window.LoopinMobile.isMobile && window.LoopinMobile.isMobile()){
+    pop.appendChild(mkRow('移动到其他位置', 'action', () => {
+      openMoveBlockPicker(anchor, block, dayIdx);
+    }));
+  }
   pop.appendChild(mkRow('删除这次打卡', 'action danger', async () => {
     if (await window.appConfirm('删除这次打卡？', { danger: true, okText: '删除' })) {
       wk.days[dayIdx] = wk.days[dayIdx].filter(x => x.id !== block.id);
@@ -2874,18 +3005,54 @@ function _placePopover(anchor, pop){
   }), 0);
 }
 
-function _appendBlockToDay(habit, person, dayIdx){
+// Append a new block to (dayIdx, segIdx). The new block's `frac` is set to "just past
+// the last existing block in this segment" so on DESKTOP it appears at the bottom of
+// that segment's pile rather than the top. On MOBILE this matches the tight list layout
+// (the block lands at the end of the segment's stack). We never modify other blocks.
+function _appendBlockToDay(habit, person, dayIdx, segIdx){
   const wk = ensureWeek(currentWeek);
   const arr = wk.days[dayIdx] || (wk.days[dayIdx] = []);
-  const nextY = arr.reduce((m, b) => Math.max(m, (b.y || 0) + 40), 8);
+  const sortedDivFracs = (wk.dividers || [])
+    .map(d => (typeof d.frac === 'number' ? d.frac : null))
+    .filter(v => v != null)
+    .sort((a, b) => a - b);
+  const numSegs = sortedDivFracs.length + 1;
+  const useSeg = Math.max(0, Math.min(numSegs - 1, typeof segIdx === 'number' ? segIdx : 0));
+  const segStart = useSeg === 0 ? 0 : sortedDivFracs[useSeg - 1];
+  const segEnd = useSeg < sortedDivFracs.length ? sortedDivFracs[useSeg] : 1;
+  // Find the largest frac among existing blocks in this same segment.
+  let maxFrac = segStart;
+  arr.forEach(b => {
+    if(typeof b.frac !== 'number') return;
+    // ALWAYS derive segment from b.frac (don't trust stored b.seg).
+    const bSeg = _segFromFrac(b.frac, sortedDivFracs);
+    if(bSeg === useSeg && b.frac > maxFrac) maxFrac = b.frac;
+  });
+  // New frac sits just after the existing max, clamped strictly inside the segment.
+  const segSpan = Math.max(0.001, segEnd - segStart);
+  const step = Math.min(0.02, segSpan * 0.08);
+  let newFrac = maxFrac + step;
+  const eps = 0.0001;
+  newFrac = Math.max(segStart + eps, Math.min(segEnd - eps, newFrac));
+  // Also compute a canonical desktop y from the SAME segmented mapping that desktop render
+  // uses, so mobile-created blocks immediately land in the right desktop segment.
   const sampleBody = document.querySelector('.calendar .day .body');
-  const canvasH = (sampleBody && sampleBody.clientHeight > 50) ? sampleBody.clientHeight : (parseFloat(localStorage.getItem('loopin_canvas_h')) || 800);
-  arr.push({ id: uid(), habitId: habit.id, participantId: person ? person.uid : null, note: '', y: nextY, frac: nextY / canvasH });
+  const canvasH = (sampleBody && sampleBody.clientHeight > 50) ? sampleBody.clientHeight : 800;
+  const newY = segmentedFracToY(newFrac, canvasH, sortedDivFracs);
+  arr.push({
+    id: uid(),
+    habitId: habit.id,
+    participantId: person ? person.uid : null,
+    note: '',
+    frac: newFrac,
+    seg: useSeg,
+    y: newY
+  });
   save(); renderAll();
   toast(`已添加到 ${DOW_CN[dayIdx]}`);
 }
 
-function openPersonPicker(anchor, habit, dayIdx){
+function openPersonPicker(anchor, habit, dayIdx, segIdx){
   document.querySelectorAll('.popover').forEach(p => p.remove());
   const pop = document.createElement('div'); pop.className = 'popover person-picker';
   const head = document.createElement('div'); head.className = 'pop-head';
@@ -2897,7 +3064,7 @@ function openPersonPicker(anchor, habit, dayIdx){
     row.onclick = (e) => {
       e.stopPropagation();
       pop.remove();
-      _appendBlockToDay(habit, p, dayIdx);
+      _appendBlockToDay(habit, p, dayIdx, segIdx || 0);
     };
     pop.appendChild(row);
   });
@@ -2907,10 +3074,179 @@ function openPersonPicker(anchor, habit, dayIdx){
   un.onclick = (e) => {
     e.stopPropagation();
     pop.remove();
-    _appendBlockToDay(habit, null, dayIdx);
+    _appendBlockToDay(habit, null, dayIdx, segIdx || 0);
   };
   pop.appendChild(un);
   _placePopover(anchor, pop);
+}
+
+// Move an existing block to (newDay, newSeg). Uses the same "append to segment end"
+// semantics as adding a new block. The original block's identity and content are
+// preserved, only its day/seg/frac change. Other blocks are not touched.
+function moveBlockTo(block, srcDay, newDay, newSeg){
+  const wk = ensureWeek(currentWeek);
+  // Remove from source day.
+  if(srcDay !== newDay){
+    wk.days[srcDay] = (wk.days[srcDay] || []).filter(x => x.id !== block.id);
+    if(!wk.days[newDay]) wk.days[newDay] = [];
+    wk.days[newDay].push(block);
+  }
+  // Recompute frac & seg for the moved block (append to target segment).
+  const arr = wk.days[newDay];
+  const sortedDivFracs = (wk.dividers || [])
+    .map(d => (typeof d.frac === 'number' ? d.frac : null))
+    .filter(v => v != null)
+    .sort((a, b) => a - b);
+  const numSegs = sortedDivFracs.length + 1;
+  const useSeg = Math.max(0, Math.min(numSegs - 1, newSeg || 0));
+  const segStart = useSeg === 0 ? 0 : sortedDivFracs[useSeg - 1];
+  const segEnd = useSeg < sortedDivFracs.length ? sortedDivFracs[useSeg] : 1;
+  let maxFrac = segStart;
+  let foundInSeg = false;
+  arr.forEach(b => {
+    if(b.id === block.id) return;
+    if(typeof b.frac !== 'number') return;
+    // ALWAYS derive segment from b.frac (don't trust stored b.seg).
+    const bSeg = _segFromFrac(b.frac, sortedDivFracs);
+    if(bSeg === useSeg){
+      foundInSeg = true;
+      if(b.frac > maxFrac) maxFrac = b.frac;
+    }
+  });
+  const segSpan = Math.max(0.001, segEnd - segStart);
+  const step = Math.min(0.02, segSpan * 0.08);
+  let newFrac;
+  if(foundInSeg){
+    // There's at least one existing block in the target segment — append after the last.
+    newFrac = maxFrac + step;
+  } else {
+    // Empty target segment: mobile/desktop should both treat the divider as the segment's
+    // anchor and place the moved block at the START of that segment, not near its bottom.
+    newFrac = segStart + step;
+  }
+  const eps = 0.0001;
+  newFrac = Math.max(segStart + eps, Math.min(segEnd - eps, newFrac));
+  block.frac = newFrac;
+  block.seg = useSeg;
+  const sampleBody = document.querySelector('.calendar .day .body');
+  const canvasH = (sampleBody && sampleBody.clientHeight > 50) ? sampleBody.clientHeight : 800;
+  block.y = segmentedFracToY(newFrac, canvasH, sortedDivFracs);
+  save(); renderAll();
+  toast(`已移动到 ${DOW_CN[newDay]}`);
+}
+
+// "Move block" picker: select target day, then segment. Mobile uses this in lieu of drag.
+function openMoveBlockPicker(anchor, block, srcDay){
+  const wk = ensureWeek(currentWeek);
+  const monday = getMonday(currentWeek);
+  document.querySelectorAll('.popover').forEach(p => p.remove());
+  const pop = document.createElement('div'); pop.className = 'popover day-picker';
+  const head = document.createElement('div'); head.className = 'pop-head';
+  head.textContent = `移动这次打卡 · 选择哪天`;
+  pop.appendChild(head);
+  for(let i = 0; i < 7; i++){
+    const d = new Date(monday); d.setDate(monday.getDate() + i);
+    const row = document.createElement('div'); row.className = 'opt day-opt' + (i === srcDay ? ' today' : '');
+    row.innerHTML = `<span class="dow">${DOW_CN[i]}</span><span class="date">${d.getMonth()+1}/${d.getDate()}</span>${i === srcDay ? '<span class="today-tag">当前</span>' : ''}`;
+    row.onclick = (e) => {
+      e.stopPropagation();
+      pop.remove();
+      // Now pick segment (skip if no dividers).
+      const sortedDividers = (wk.dividers || []).filter(d => typeof d.frac === 'number');
+      if(sortedDividers.length === 0){
+        moveBlockTo(block, srcDay, i, 0);
+        return;
+      }
+      _openSegmentPickerForMove(anchor, block, srcDay, i);
+    };
+    pop.appendChild(row);
+  }
+  _placePopover(anchor, pop);
+}
+
+function _openSegmentPickerForMove(anchor, block, srcDay, newDay){
+  const wk = ensureWeek(currentWeek);
+  const sortedDividers = (wk.dividers || [])
+    .filter(d => typeof d.frac === 'number')
+    .slice()
+    .sort((a, b) => a.frac - b.frac);
+  document.querySelectorAll('.popover').forEach(p => p.remove());
+  const pop = document.createElement('div'); pop.className = 'popover segment-picker';
+  const head = document.createElement('div'); head.className = 'pop-head';
+  head.textContent = `${DOW_CN[newDay]} · 放到哪一段`;
+  pop.appendChild(head);
+  const numSegs = sortedDividers.length + 1;
+  for(let segIdx = 0; segIdx < numSegs; segIdx++){
+    const row = document.createElement('div'); row.className = 'opt seg-opt';
+    let label;
+    if(numSegs === 2){
+      label = segIdx === 0 ? '分割线之上' : '分割线之下';
+    } else if(segIdx === 0){
+      label = '最顶部段';
+    } else if(segIdx === numSegs - 1){
+      label = '最底部段';
+    } else {
+      label = `第 ${segIdx + 1} 段`;
+    }
+    row.textContent = label;
+    row.onclick = (e) => {
+      e.stopPropagation();
+      pop.remove();
+      moveBlockTo(block, srcDay, newDay, segIdx);
+    };
+    pop.appendChild(row);
+  }
+  _placePopover(anchor, pop);
+}
+
+// Pick which segment (above/below divider(s)) the new block belongs to.
+function openSegmentPicker(anchor, habit, person, dayIdx){
+  const wk = ensureWeek(currentWeek);
+  const sortedDividers = (wk.dividers || [])
+    .filter(d => typeof d.frac === 'number')
+    .slice()
+    .sort((a, b) => a.frac - b.frac);
+  if(sortedDividers.length === 0){
+    // No dividers — only one segment, skip the segment picker step.
+    _proceedAfterSegPick(anchor, habit, person, dayIdx, 0);
+    return;
+  }
+  document.querySelectorAll('.popover').forEach(p => p.remove());
+  const pop = document.createElement('div'); pop.className = 'popover segment-picker';
+  const head = document.createElement('div'); head.className = 'pop-head';
+  head.textContent = `${habit.name} · ${DOW_CN[dayIdx]} · 选择放到哪一段`;
+  pop.appendChild(head);
+  const numSegs = sortedDividers.length + 1;
+  for(let segIdx = 0; segIdx < numSegs; segIdx++){
+    const row = document.createElement('div'); row.className = 'opt seg-opt';
+    let label;
+    if(numSegs === 2){
+      label = segIdx === 0 ? '分割线之上' : '分割线之下';
+    } else if(segIdx === 0){
+      label = '最顶部段';
+    } else if(segIdx === numSegs - 1){
+      label = '最底部段';
+    } else {
+      label = `第 ${segIdx + 1} 段`;
+    }
+    row.textContent = label;
+    row.onclick = (e) => {
+      e.stopPropagation();
+      pop.remove();
+      _proceedAfterSegPick(anchor, habit, person, dayIdx, segIdx);
+    };
+    pop.appendChild(row);
+  }
+  _placePopover(anchor, pop);
+}
+
+function _proceedAfterSegPick(anchor, habit, person, dayIdx, segIdx){
+  if(!person && state.people.length > 1){
+    openPersonPicker(anchor, habit, dayIdx, segIdx);
+  } else {
+    const p = person || (state.people.length === 1 ? state.people[0] : null);
+    _appendBlockToDay(habit, p, dayIdx, segIdx);
+  }
 }
 
 function openDayPicker(anchor, habit, person){
@@ -2930,13 +3266,10 @@ function openDayPicker(anchor, habit, person){
     row.onclick = (e) => {
       e.stopPropagation();
       pop.remove();
-      // If no person preselected and multiple members exist, ask who.
-      if (!person && state.people.length > 1) {
-        openPersonPicker(anchor, habit, i);
-      } else {
-        const p = person || (state.people.length === 1 ? state.people[0] : null);
-        _appendBlockToDay(habit, p, i);
-      }
+      // Mobile flow: day → segment → person → append.
+      // Desktop flow (rare; mostly desktop drag): same chain but segment-picker auto-skips
+      // when there are no dividers.
+      openSegmentPicker(anchor, habit, person, i);
     };
     pop.appendChild(row);
   }

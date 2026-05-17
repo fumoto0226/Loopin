@@ -533,11 +533,15 @@ html.auth-pending #loginOverlay{display:none}
   .calendar .block .av{width:16px;height:16px;line-height:16px;font-size:11px;border:0;box-shadow:none;background:transparent;color:inherit;border-radius:50%;box-sizing:border-box}
   .calendar .block .av.av-emoji{font-size:14px;background:transparent}
   .calendar .block .av.empty{background:#eef0f6;color:#8a90a4;font-size:10px;font-weight:600}
-  /* Mobile: show divider lines (created on desktop) as read-only decoration. */
+  /* Mobile: hide the original cross-calendar divider line (it uses canvasH-based frac
+     positioning, which doesn't match our tight-list layout). We render our own mobile
+     divider line that spans all 7 columns at the y where the longest upper-segment ends. */
   .add-divider-btn{display:none}
-  .divider-line{pointer-events:none;cursor:default}
-  .divider-line:hover{background:var(--line)}
+  .divider-line{display:none}
   .divider-remove{display:none}
+  /* Single horizontal divider line spanning all 7 columns. Position is set inline so the
+     line always sits right below the day with the most upper-segment content. */
+  .calendar .mobile-global-divider{position:absolute;left:0;right:0;height:1px;background:#cfd2dd;pointer-events:none;z-index:6}
 
   /* drawer (习惯库 抽屉) full-width */
   .drawer{width:100vw;padding:14px}
