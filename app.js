@@ -157,27 +157,21 @@ function _yToSegmentedGlobalFrac(y, canvasH, sortedDivYs, sortedDivFracs){
 }
 
 function _syncFracsForSave(){
+  // SIMPLE: linear frac = y / canvasH for everything. This is exactly invertible with the
+  // render math (b.y = b.frac * canvasH) so positions don't drift across save / load.
+  // Cross-device behaviour: same b.frac on any canvasH renders at the same fractional
+  // position. A block whose b.frac > divider.frac is always visually below the divider.
   const sampleBody = document.querySelector('.calendar .day .body');
   const canvasH = (sampleBody && sampleBody.clientHeight > 50) ? sampleBody.clientHeight
                   : (parseFloat(localStorage.getItem('loopin_canvas_h')) || 800);
   if(canvasH <= 0) return;
   const wk = state.weeks[currentWeek];
   if(!wk) return;
-  // Dividers: linear (they ARE the segment boundaries).
   (wk.dividers || []).forEach(d => { if(typeof d.y === 'number') d.frac = Math.max(0, Math.min(0.99, d.y / canvasH)); });
-  const sortedDivYs = (wk.dividers || [])
-    .map(d => (typeof d.y === 'number' ? d.y : null))
-    .filter(v => v != null)
-    .sort((a, b) => a - b);
-  const sortedDivFracs = (wk.dividers || [])
-    .map(d => (typeof d.frac === 'number' ? d.frac : null))
-    .filter(v => v != null)
-    .sort((a, b) => a - b);
-  // Blocks: use segmented math so that round-trip is identity. No more 6px-per-cycle drift.
   Object.values(wk.days || {}).forEach(arr => {
     (arr || []).forEach(b => {
       if(typeof b.y !== 'number') return;
-      b.frac = _yToSegmentedGlobalFrac(b.y, canvasH, sortedDivYs, sortedDivFracs);
+      b.frac = Math.max(0, Math.min(0.99, b.y / canvasH));
     });
   });
 }
@@ -526,31 +520,16 @@ function segmentedFracToY(blockFrac, canvasH, sortedDivFracs){
   return Math.max(0, segStartY + relFrac * Math.max(0, segEndY - segStartY));
 }
 
-function renderBlocksRaw(body, dayIdx, canvasH, sortedDivYs, sortedDivFracs){
+function renderBlocksRaw(body, dayIdx, canvasH){
   const wk = state.weeks[currentWeek]; if(!wk) return;
   const arr = wk.days[dayIdx] || [];
   body.style.minHeight = '';
-  const sdYs = sortedDivYs || [];
-  const sdFracs = sortedDivFracs || [];
   arr.forEach(b => {
     const el = body.querySelector(`[data-bid="${b.id}"]`);
     if(!el) return;
-    let y;
-    if(typeof b.frac === 'number'){
-      // SAME authoritative path as desktop hydration: derive seg + relFrac from b.frac.
-      const seg = _segFromFrac(b.frac, sdFracs);
-      const segStartFrac = seg === 0 ? 0 : sdFracs[seg - 1];
-      const segEndFrac = seg < sdFracs.length ? sdFracs[seg] : 1;
-      const segSpan = Math.max(0.0001, segEndFrac - segStartFrac);
-      const relFrac = Math.max(0, Math.min(1, (b.frac - segStartFrac) / segSpan));
-      const segTop = seg === 0 ? 0 : sdYs[seg - 1];
-      const segBottom = seg < sdYs.length ? sdYs[seg] : canvasH;
-      const innerTop = segTop + (seg > 0 ? DIVIDER_CLEAR : 0);
-      const innerBottom = segBottom - (seg < sdYs.length ? DIVIDER_CLEAR : 0);
-      y = innerTop + relFrac * Math.max(0, innerBottom - innerTop);
-    } else {
-      y = typeof b.y === 'number' ? b.y : BODY_PAD;
-    }
+    // Linear: same math as desktop. b.y = b.frac * canvasH. Round-trips with save exactly.
+    const y = (typeof b.frac === 'number') ? (b.frac * canvasH)
+            : (typeof b.y === 'number') ? b.y : BODY_PAD;
     el.style.top = y + 'px';
   });
 }
@@ -607,15 +586,7 @@ function resolveAllOverlaps(){
     const sampleBody = bodies[0];
     const canvasH = sampleBody ? sampleBody.getBoundingClientRect().height : 0;
     if(canvasH > 50){
-      const wk = state.weeks[currentWeek];
-      const sortedDivFracs = (wk?.dividers || [])
-        .map(d => (typeof d.frac === 'number' ? d.frac : null))
-        .filter(f => f != null)
-        .sort((a, b) => a - b);
-      // Compute dividers' pixel positions at the CURRENT canvasH so the segment slot
-      // math stays anchored to where the divider lines actually are right now.
-      const sortedDivYs = sortedDivFracs.map(f => f * canvasH);
-      bodies.forEach((body, i) => renderBlocksRaw(body, i, canvasH, sortedDivYs, sortedDivFracs));
+      bodies.forEach((body, i) => renderBlocksRaw(body, i, canvasH));
       repositionDividersRaw(canvasH);
     }
     _watchBodyResize();
@@ -1705,27 +1676,11 @@ function renderCalendar(){
       .map(d => (typeof d.frac === 'number' ? d.frac : null))
       .filter(f => f != null)
       .sort((a, b) => a - b);
-    // AUTHORITATIVE RENDERING: derive segment freshly from b.frac vs current divider
-    // fracs every time. We deliberately IGNORE stored b.seg / b.segOffset because earlier
-    // versions of this code wrote bad values to Firestore (e.g. mobile measuring canvasH
-    // before layout settled, then saving small segOffsets that locked all blocks near
-    // the divider). With this approach: b.frac is the only source of truth that flows
-    // across devices. A block whose b.frac > divider.frac is ALWAYS rendered below the
-    // divider, on any canvas, at the equivalent fraction-of-segment position.
+    // SIMPLE LINEAR: y = frac * canvasH for everything. Exactly invertible with save.
     Object.values(wk.days || {}).forEach(arr => {
       (arr || []).forEach(b => {
         if(typeof b.frac !== 'number') return;
-        const seg = _segFromFrac(b.frac, sortedDivFracsHy);
-        const segStartFrac = seg === 0 ? 0 : sortedDivFracsHy[seg - 1];
-        const segEndFrac = seg < sortedDivFracsHy.length ? sortedDivFracsHy[seg] : 1;
-        const segSpan = Math.max(0.0001, segEndFrac - segStartFrac);
-        const relFrac = Math.max(0, Math.min(1, (b.frac - segStartFrac) / segSpan));
-        const segTop = seg === 0 ? 0 : sortedDivYsHy[seg - 1];
-        const segBottom = seg < sortedDivYsHy.length ? sortedDivYsHy[seg] : canvasH;
-        const innerTop = segTop + (seg > 0 ? DIVIDER_CLEAR : 0);
-        const innerBottom = segBottom - (seg < sortedDivYsHy.length ? DIVIDER_CLEAR : 0);
-        b.seg = seg;
-        b.y = innerTop + relFrac * Math.max(0, innerBottom - innerTop);
+        b.y = b.frac * canvasH;
       });
     });
   }
